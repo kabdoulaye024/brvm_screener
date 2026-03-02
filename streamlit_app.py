@@ -62,11 +62,85 @@ for key, val in [
     ("secteur_sel", "Télécommunications"),
     ("periode_sel", "Annuel complet (2024 ou 2025)"),
     ("annee_sel", "2025"),
-    ("marche_cache", {}),       # cache cours brvm.org
-    ("marche_cache_date", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = val
+
+# ==========================================================
+# RÉFÉRENTIEL TICKERS BRVM — ticker → (nom, secteur)
+# Source : richbourse.com/common/apprendre/liste-societes
+# Mise à jour : mars 2026
+# ==========================================================
+TICKERS_BRVM = {
+    # ── Télécommunications ──────────────────────────────────
+    "SNTS":  ("SONATEL SENEGAL",                        "Télécommunications"),
+    "ORAC":  ("ORANGE COTE D'IVOIRE",                   "Télécommunications"),
+    "ONTBF": ("ONATEL BURKINA FASO",                    "Télécommunications"),
+    # ── Services Financiers (Banques) ───────────────────────
+    "BOAB":  ("BANK OF AFRICA BENIN",                   "Services Financiers"),
+    "BOABF": ("BANK OF AFRICA BURKINA FASO",            "Services Financiers"),
+    "BOAC":  ("BANK OF AFRICA COTE D'IVOIRE",           "Services Financiers"),
+    "BOAM":  ("BANK OF AFRICA MALI",                    "Services Financiers"),
+    "BOAN":  ("BANK OF AFRICA NIGER",                   "Services Financiers"),
+    "BOAS":  ("BANK OF AFRICA SENEGAL",                 "Services Financiers"),
+    "BICB":  ("BICICI BENIN",                           "Services Financiers"),
+    "BICC":  ("BICI COTE D'IVOIRE",                     "Services Financiers"),
+    "CBIBF": ("CORIS BANK INTERNATIONAL BURKINA FASO",  "Services Financiers"),
+    "ECOC":  ("ECOBANK COTE D'IVOIRE",                  "Services Financiers"),
+    "ETIT":  ("ECOBANK TRANSNATIONAL (ETI) TOGO",       "Services Financiers"),
+    "NSBC":  ("NSIA BANQUE COTE D'IVOIRE",              "Services Financiers"),
+    "ORGT":  ("ORAGROUP TOGO",                          "Services Financiers"),
+    "SAFC":  ("ALIOS FINANCE COTE D'IVOIRE",            "Services Financiers"),
+    "SGBC":  ("SGB COTE D'IVOIRE",                      "Services Financiers"),
+    "SIBC":  ("SOCIETE IVOIRIENNE DE BANQUE",           "Services Financiers"),
+    # ── Services Publics ────────────────────────────────────
+    "CIEC":  ("CIE COTE D'IVOIRE",                      "Services Publics"),
+    "SDCC":  ("SODE COTE D'IVOIRE",                     "Services Publics"),
+    # ── Énergie ─────────────────────────────────────────────
+    "TTLC":  ("TOTAL ENERGIES COTE D'IVOIRE",           "Énergie"),
+    "TTLS":  ("TOTAL ENERGIES SENEGAL",                 "Énergie"),
+    "SHEC":  ("VIVO ENERGY COTE D'IVOIRE",              "Énergie"),
+    "SMBC":  ("SMB COTE D'IVOIRE",                      "Énergie"),
+    # ── Industriels ─────────────────────────────────────────
+    "FTSC":  ("FILTISAC COTE D'IVOIRE",                 "Industriels"),
+    "CABC":  ("SICABLE COTE D'IVOIRE",                  "Industriels"),
+    "STAC":  ("SETAO COTE D'IVOIRE",                    "Industriels"),
+    "SDSC":  ("AFRICA GLOBAL LOGISTICS CI",             "Industriels"),
+    "SEMC":  ("EVIOSYS PACKAGING SIEM CI",              "Industriels"),
+    "SIVC":  ("ERIUM CI",                               "Industriels"),
+    # ── Consommation de base ────────────────────────────────
+    "NTLC":  ("NESTLE COTE D'IVOIRE",                   "Consommation de base (hors Unilever)"),
+    "PALC":  ("PALM COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
+    "SPHC":  ("SAPH COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
+    "SICC":  ("SICOR COTE D'IVOIRE",                    "Consommation de base (hors Unilever)"),
+    "STBC":  ("SITAB COTE D'IVOIRE",                    "Consommation de base (hors Unilever)"),
+    "SOGC":  ("SOGB COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
+    "SLBC":  ("SOLIBRA COTE D'IVOIRE",                  "Consommation de base (hors Unilever)"),
+    "SCRC":  ("SUCRIVOIRE COTE D'IVOIRE",               "Consommation de base (hors Unilever)"),
+    "UNLC":  ("UNILEVER COTE D'IVOIRE",                 "Consommation de base (hors Unilever)"),
+    # ── Consommation discrétionnaire ────────────────────────
+    "BNBC":  ("BERNABE COTE D'IVOIRE",                  "Consommation discrétionnaire"),
+    "CFAC":  ("CFAO MOTORS COTE D'IVOIRE",              "Consommation discrétionnaire"),
+    "LNBB":  ("LOTERIE NATIONALE DU BENIN",             "Consommation discrétionnaire"),
+    "NEIC":  ("NEI-CEDA COTE D'IVOIRE",                 "Consommation discrétionnaire"),
+    "ABJC":  ("SERVAIR ABIDJAN COTE D'IVOIRE",          "Consommation discrétionnaire"),
+    "PRSC":  ("TRACTAFRIC MOTORS COTE D'IVOIRE",        "Consommation discrétionnaire"),
+    "UNXC":  ("UNIWAX COTE D'IVOIRE",                   "Consommation discrétionnaire"),
+}
+
+def get_secteur_from_ticker(ticker: str) -> str | None:
+    """Retourne le secteur associé au ticker, ou None si inconnu."""
+    info = TICKERS_BRVM.get(ticker.upper().strip())
+    return info[1] if info else None
+
+def get_nom_from_ticker(ticker: str) -> str | None:
+    """Retourne le nom complet de la société."""
+    info = TICKERS_BRVM.get(ticker.upper().strip())
+    return info[0] if info else None
+
+TICKERS_LISTE = sorted(TICKERS_BRVM.keys())
+
+
 
 # ==========================================================
 # RÉFÉRENTIELS
@@ -615,10 +689,40 @@ with tab1:
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        titre = st.text_input("Nom / Ticker", placeholder="ex: SNTS, SGBCI…", key="titre_input")
+        # Selectbox avec tous les tickers connus + option saisie libre
+        ticker_options = ["(Saisir manuellement)"] + TICKERS_LISTE
+        ticker_choice = st.selectbox(
+            "Ticker BRVM",
+            ticker_options,
+            key="ticker_select",
+            help="Sélectionnez un ticker connu ou choisissez 'Saisir manuellement'"
+        )
+        if ticker_choice == "(Saisir manuellement)":
+            titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…", key="titre_input_libre").upper().strip()
+        else:
+            titre = ticker_choice
+            nom_societe = get_nom_from_ticker(titre)
+            if nom_societe:
+                st.markdown(f"<div class='tooltip-text'>🏢 {nom_societe}</div>", unsafe_allow_html=True)
+
+    # Auto-détection du secteur
+    secteur_auto = get_secteur_from_ticker(titre) if titre else None
+
     with c2:
-        secteur = st.selectbox("Secteur", list(PER_SECTORIELS.keys()), key="secteur_input")
+        secteur_index = list(PER_SECTORIELS.keys()).index(secteur_auto) if secteur_auto and secteur_auto in PER_SECTORIELS else 0
+        secteur = st.selectbox(
+            "Secteur",
+            list(PER_SECTORIELS.keys()),
+            index=secteur_index,
+            key="secteur_input",
+            help="Détecté automatiquement selon le ticker. Modifiable si besoin."
+        )
+        if secteur_auto and secteur_auto == secteur:
+            st.markdown("<div class='tooltip-text'>✅ Secteur détecté automatiquement</div>", unsafe_allow_html=True)
+        elif titre and not secteur_auto:
+            st.markdown("<div class='tooltip-text'>⚠️ Ticker inconnu — secteur à sélectionner manuellement</div>", unsafe_allow_html=True)
         st.session_state.secteur_sel = secteur
+
     with c3:
         periode_donnees = st.selectbox(
             "Période disponible",
@@ -630,6 +734,7 @@ with tab1:
         annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
         st.session_state.annee_sel = annee_donnees
 
+
     est_banque   = (secteur == SECTEUR_BANCAIRE)
     per_cible    = PER_SECTORIELS[secteur]
     taux_suggere = TAUX_DCF_SECTEUR[secteur]
@@ -637,21 +742,15 @@ with tab1:
     # ── Récupération automatique des données de marché ─────
     marche_data   = {}
     source_tech   = "manuel"
-    fetch_status  = ""
 
-    if titre and len(titre) >= 2:
-        with st.spinner(f"⏳ Chargement des données de marché pour **{titre.upper()}**…"):
+    if titre and len(titre) >= 3:
+        with st.spinner(f"⏳ Chargement richbourse.com pour **{titre}**…"):
             marche_data = get_marche_data(titre.strip())
             source_tech = marche_data.get("source_tech", "manuel")
 
-        if "prix" in marche_data:
-            fetch_status = "auto_prix"
-        if source_tech == "auto":
-            fetch_status = "auto_full"
-
     # ── Fondamentaux sauvegardés ───────────────────────────
     fond_saved = None
-    if titre and len(titre) >= 2:
+    if titre and len(titre) >= 3:
         fond_saved = load_fondamentaux(titre.strip())
 
     # Indicateur de statut en temps réel
@@ -704,7 +803,7 @@ with tab1:
         </div>""", unsafe_allow_html=True)
 
     # ── Bloc debug (affiché si données auto en échec) ──────
-    if titre and len(titre) >= 2 and not marche_data.get("prix") and (
+    if titre and len(titre) >= 3 and not marche_data.get("prix") and (
         marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")
     ):
         with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
@@ -754,7 +853,7 @@ with tab1:
             prix_label = f"💰 Prix actuel (FCFA) — {signe}{var_affich:.2f}% aujourd'hui ✅"
 
         prix = st.number_input(prix_label, min_value=1.0, value=float(prix_defaut),
-                               help="Cours chargé automatiquement depuis brvm.org (ou saisi manuellement).")
+                               help="Cours chargé automatiquement depuis richbourse.com (ou saisi manuellement).")
 
         # ── Section 2 : Fondamentaux ────────────────────────
         if est_banque:
@@ -1028,7 +1127,7 @@ with tab1:
         # AFFICHAGE RÉSULTAT
         # ══════════════════════════════════════════════════════
         st.markdown("---")
-        badge_src = "<span class='badge-auto'>✅ AUTO brvm.org</span>" if "prix" in marche_data else "<span class='badge-manual'>⚠️ Manuel</span>"
+        badge_src = "<span class='badge-auto'>✅ AUTO richbourse</span>" if "prix" in marche_data else "<span class='badge-manual'>⚠️ Manuel</span>"
         badge_bq  = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;border-radius:10px;padding:1px 8px;font-size:0.72em;font-weight:700'>🏦 BANCAIRE</span>" if est_banque else ""
 
         st.markdown(
@@ -1394,18 +1493,25 @@ with tab4:
     └─────────────────────────────────────────────────────────────┘
     ```
 
-    ### Pourquoi richbourse.com plutôt que brvm.org ou sikafinance ?
+    ### Pourquoi richbourse.com comme source unique ?
 
     | Critère | richbourse.com | brvm.org | sikafinance.com |
     |---|---|---|---|
-    | HTML statique (scrapable) | ✅ | ⚠️ partiel | ⚠️ partiel |
-    | Indicateurs déjà calculés | ✅ RSI/BB/EMA en texte | ❌ | ❌ |
-    | Historique structuré | ✅ `/historique/TICKER` | ⚠️ | ✅ download CSV |
-    | Utilisé par package R officiel | ✅ | ❌ | ❌ |
-    | API officielle | ✅ `/investisseur/api` | ⚠️ FIX protocol | ❌ |
+    | HTML statique scrapable | ✅ | ❌ JS dynamique | ⚠️ partiel |
+    | RSI/BB/EMA déjà calculés | ✅ en texte HTML | ❌ | ❌ |
+    | Historique par ticker | ✅ `/historique/TICKER` | ❌ | ✅ mais login |
+    | Données J-1 fiables | ✅ | ✅ | ✅ |
+    | Mapping ticker → secteur | ✅ liste-societes | ❌ | ❌ |
 
-    richbourse.com est la seule source à exposer le RSI, la position des BB et la tendance
-    **directement en texte HTML** sur une page dédiée par ticker — pas besoin de recalculer.
+    **Note données J-1** : richbourse.com publie les cours de clôture de la veille.
+    Les indicateurs techniques (RSI, BB, EMA) sont donc calculés sur données J-1,
+    ce qui est parfaitement adapté à une stratégie de rotation hebdomadaire.
+
+    ### Référentiel tickers BRVM intégré
+
+    Le dictionnaire `TICKERS_BRVM` contient les ~47 sociétés cotées avec leur secteur.
+    La sélection du ticker **pré-remplit automatiquement** le secteur et le nom de la société.
+    Pour un nouveau ticker non répertorié, utiliser l'option **Saisir manuellement**.
 
     ### Installation des dépendances
 
