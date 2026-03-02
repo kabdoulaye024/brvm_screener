@@ -900,7 +900,7 @@ with tab1:
                 st.warning("⚠️ Aucune trace — cache actif. Faites Clear Cache puis rechargez.")
 
         if periode_donnees != "Annuel complet (2024 ou 2025)":
-            annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
+            annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2025"
         msg_bilan = (f"Crédits et dépôts : référez-vous au bilan {annee_bilan_ref}."
                     if est_banque
                     else f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}.")
