@@ -9,7 +9,6 @@ from datetime import datetime, date
 import warnings
 warnings.filterwarnings("ignore")
 
-# pandas-ta optionnel — fallback calcul manuel si non installé
 try:
     import pandas_ta as ta
     HAS_PANDAS_TA = True
@@ -51,43 +50,47 @@ st.markdown("""
     .badge-manual { display: inline-block; background: #2d2500; color: #d29922; border: 1px solid #d29922; border-radius: 10px; padding: 1px 8px; font-size: 0.72em; font-weight: 700; margin-left: 6px; vertical-align: middle; }
     .form-divider { border: none; border-top: 1px solid #30363d; margin: 16px 0; }
     .saved-chip { display: inline-block; background: #1f3a5f; color: #79c0ff; border: 1px solid #79c0ff; border-radius: 12px; padding: 2px 10px; font-size: 0.75em; font-weight: 700; }
-    /* ===== Ticker Price Block ===== */
-
-.ticker-price-block {
-    text-align: right;
-}
-
-.ticker-price-value {
-    font-size: 1.8rem;
-    font-weight: 700;
-    line-height: 1.2;
-}
-
-.ticker-currency {
-    font-size: 0.55em;
-    color: #8b949e;
-    margin-left: 4px;
-}
-
-.ticker-price-variation {
-    margin-top: 6px;
-    font-weight: 600;
-    font-size: 0.95rem;
-}
-
-.ticker-price-variation.positive {
-    color: #3fb950;
-}
-
-.ticker-price-variation.negative {
-    color: #f85149;
-}
-
-.ticker-price-source {
-    margin-top: 4px;
-    font-size: 0.75rem;
-    color: #8b949e;
-}
+    /* ── Carte ticker ── */
+    .ticker-card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 12px 0 10px 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+    .ticker-symbol {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 1.6em;
+        font-weight: 700;
+        color: #e6edf3;
+        letter-spacing: 2px;
+    }
+    .ticker-name {
+        font-size: 0.88em;
+        color: #8b949e;
+        margin-top: 4px;
+    }
+    .ticker-sector-badge {
+        display: inline-block;
+        border-radius: 10px;
+        padding: 2px 10px;
+        font-size: 0.75em;
+        font-weight: 700;
+        margin-top: 6px;
+    }
+    .ticker-price-block { text-align: right; }
+    .ticker-price-value { font-family: 'IBM Plex Mono', monospace; font-size: 1.8rem; font-weight: 700; line-height: 1.2; color: #e6edf3; }
+    .ticker-currency { font-size: 0.55em; color: #8b949e; margin-left: 4px; }
+    .ticker-price-variation { margin-top: 6px; font-weight: 600; font-size: 0.95rem; }
+    .ticker-price-variation.positive { color: #3fb950; }
+    .ticker-price-variation.negative { color: #f85149; }
+    .ticker-price-source { margin-top: 4px; font-size: 0.75rem; color: #8b949e; }
+    .sector-locked { color: #8b949e; font-size: 0.78em; font-style: italic; margin: -4px 0 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -104,16 +107,12 @@ for key, val in [
         st.session_state[key] = val
 
 # ==========================================================
-# RÉFÉRENTIEL TICKERS BRVM — ticker → (nom, secteur)
-# Source : richbourse.com/common/apprendre/liste-societes
-# Mise à jour : mars 2026
+# RÉFÉRENTIEL TICKERS BRVM
 # ==========================================================
 TICKERS_BRVM = {
-    # ── Télécommunications ──────────────────────────────────
     "SNTS":  ("SONATEL SENEGAL",                        "Télécommunications"),
     "ORAC":  ("ORANGE COTE D'IVOIRE",                   "Télécommunications"),
     "ONTBF": ("ONATEL BURKINA FASO",                    "Télécommunications"),
-    # ── Services Financiers (Banques) ───────────────────────
     "BOAB":  ("BANK OF AFRICA BENIN",                   "Services Financiers"),
     "BOABF": ("BANK OF AFRICA BURKINA FASO",            "Services Financiers"),
     "BOAC":  ("BANK OF AFRICA COTE D'IVOIRE",           "Services Financiers"),
@@ -130,22 +129,18 @@ TICKERS_BRVM = {
     "SAFC":  ("ALIOS FINANCE COTE D'IVOIRE",            "Services Financiers"),
     "SGBC":  ("SGB COTE D'IVOIRE",                      "Services Financiers"),
     "SIBC":  ("SOCIETE IVOIRIENNE DE BANQUE",           "Services Financiers"),
-    # ── Services Publics ────────────────────────────────────
     "CIEC":  ("CIE COTE D'IVOIRE",                      "Services Publics"),
     "SDCC":  ("SODE COTE D'IVOIRE",                     "Services Publics"),
-    # ── Énergie ─────────────────────────────────────────────
     "TTLC":  ("TOTAL ENERGIES COTE D'IVOIRE",           "Énergie"),
     "TTLS":  ("TOTAL ENERGIES SENEGAL",                 "Énergie"),
     "SHEC":  ("VIVO ENERGY COTE D'IVOIRE",              "Énergie"),
     "SMBC":  ("SMB COTE D'IVOIRE",                      "Énergie"),
-    # ── Industriels ─────────────────────────────────────────
     "FTSC":  ("FILTISAC COTE D'IVOIRE",                 "Industriels"),
     "CABC":  ("SICABLE COTE D'IVOIRE",                  "Industriels"),
     "STAC":  ("SETAO COTE D'IVOIRE",                    "Industriels"),
     "SDSC":  ("AFRICA GLOBAL LOGISTICS CI",             "Industriels"),
     "SEMC":  ("EVIOSYS PACKAGING SIEM CI",              "Industriels"),
     "SIVC":  ("ERIUM CI",                               "Industriels"),
-    # ── Consommation de base ────────────────────────────────
     "NTLC":  ("NESTLE COTE D'IVOIRE",                   "Consommation de base (hors Unilever)"),
     "PALC":  ("PALM COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
     "SPHC":  ("SAPH COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
@@ -155,7 +150,6 @@ TICKERS_BRVM = {
     "SLBC":  ("SOLIBRA COTE D'IVOIRE",                  "Consommation de base (hors Unilever)"),
     "SCRC":  ("SUCRIVOIRE COTE D'IVOIRE",               "Consommation de base (hors Unilever)"),
     "UNLC":  ("UNILEVER COTE D'IVOIRE",                 "Consommation de base (hors Unilever)"),
-    # ── Consommation discrétionnaire ────────────────────────
     "BNBC":  ("BERNABE COTE D'IVOIRE",                  "Consommation discrétionnaire"),
     "CFAC":  ("CFAO MOTORS COTE D'IVOIRE",              "Consommation discrétionnaire"),
     "LNBB":  ("LOTERIE NATIONALE DU BENIN",             "Consommation discrétionnaire"),
@@ -165,19 +159,17 @@ TICKERS_BRVM = {
     "UNXC":  ("UNIWAX COTE D'IVOIRE",                   "Consommation discrétionnaire"),
 }
 
-def get_secteur_from_ticker(ticker: str) -> str | None:
-    """Retourne le secteur associé au ticker, ou None si inconnu."""
+def get_secteur_from_ticker(ticker):
     info = TICKERS_BRVM.get(ticker.upper().strip())
     return info[1] if info else None
 
-def get_nom_from_ticker(ticker: str) -> str | None:
-    """Retourne le nom complet de la société."""
+def get_nom_from_ticker(ticker):
     info = TICKERS_BRVM.get(ticker.upper().strip())
     return info[0] if info else None
 
-TICKERS_LISTE = sorted(TICKERS_BRVM.keys())
-
-
+TICKERS_LISTE  = sorted(TICKERS_BRVM.keys())
+TICKERS_LABELS = {tk: f"{tk} — {TICKERS_BRVM[tk][0]}" for tk in TICKERS_LISTE}
+LABEL_TO_TICKER = {v: k for k, v in TICKERS_LABELS.items()}
 
 # ==========================================================
 # RÉFÉRENTIELS
@@ -252,12 +244,10 @@ HEADERS_HTTP = {
     "Accept-Language": "fr-FR,fr;q=0.9",
 }
 
-# Tickers officiels richbourse.com (pour valider les saisies)
-# Format : ticker BRVM standard (ex: SNTS, SGBC, BOAC…)
 RICHBOURSE_BASE = "https://www.richbourse.com"
 
 # ==========================================================
-# BASE DE DONNÉES SQLITE — Persistance fondamentaux
+# BASE DE DONNÉES SQLITE
 # ==========================================================
 DB_PATH = "fondamentaux_brvm.db"
 
@@ -271,22 +261,18 @@ def get_db():
             periode           TEXT,
             annee             TEXT,
             est_banque        INTEGER DEFAULT 0,
-            -- Commun
             nombre_actions    REAL,
             dividende         REAL,
             bpa_prec          REAL,
             capitaux_propres  REAL,
-            -- Standard seulement
             resultat          REAL,
             total_actif       REAL,
             dettes_totales    REAL,
             stabilite_bpa     TEXT,
-            -- Bancaire seulement
             pnb               REAL,
             resultat_b        REAL,
             encours_credits   REAL,
             depots_clientele  REAL,
-            -- Metadata
             maj_at            TEXT,
             notes             TEXT
         )
@@ -296,31 +282,24 @@ def get_db():
 
 def save_fondamentaux(ticker, data: dict):
     conn = get_db()
-    data["ticker"]  = ticker.upper()
-    data["maj_at"]  = datetime.now().strftime("%Y-%m-%d %H:%M")
+    data["ticker"] = ticker.upper()
+    data["maj_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     cols   = ", ".join(data.keys())
     placeh = ", ".join(["?" for _ in data])
-    vals   = list(data.values())
-    conn.execute(
-        f"INSERT OR REPLACE INTO fondamentaux ({cols}) VALUES ({placeh})",
-        vals
-    )
+    conn.execute(f"INSERT OR REPLACE INTO fondamentaux ({cols}) VALUES ({placeh})", list(data.values()))
     conn.commit()
     conn.close()
 
-def load_fondamentaux(ticker: str) -> dict | None:
+def load_fondamentaux(ticker):
     try:
         conn = get_db()
-        row = conn.execute(
-            "SELECT * FROM fondamentaux WHERE ticker = ?",
-            (ticker.upper(),)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM fondamentaux WHERE ticker = ?", (ticker.upper(),)).fetchone()
         conn.close()
         return dict(row) if row else None
     except Exception:
         return None
 
-def list_tickers_sauvegardes() -> list[str]:
+def list_tickers_sauvegardes():
     try:
         conn = get_db()
         rows = conn.execute("SELECT ticker, secteur, maj_at FROM fondamentaux ORDER BY maj_at DESC").fetchall()
@@ -329,14 +308,14 @@ def list_tickers_sauvegardes() -> list[str]:
     except Exception:
         return []
 
-def delete_fondamentaux(ticker: str):
+def delete_fondamentaux(ticker):
     conn = get_db()
     conn.execute("DELETE FROM fondamentaux WHERE ticker = ?", (ticker.upper(),))
     conn.commit()
     conn.close()
 
 # ==========================================================
-# SCRAPING — richbourse.com (source principale)
+# SCRAPING
 # ==========================================================
 try:
     from bs4 import BeautifulSoup
@@ -346,21 +325,16 @@ except ImportError:
 
 import re as _re
 
+def _clean_num(v):
+    return float(str(v).replace(" ", "").replace(",", ".").replace("\xa0", "").replace("%", "").strip())
 
-def _clean_num(v) -> float:
-    return float(str(v).replace(" ","").replace(",",".").replace("\xa0","").replace("%","").strip())
 
-
-@st.cache_data(ttl=1800, show_spinner=False)  # cache 30 min
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
-    """
-    Scrape le cours actuel + variation depuis richbourse.com.
-    Essaie plusieurs URLs en cascade.
-    """
     tk = ticker.upper().strip()
     erreurs = []
 
-    # ── Tentative 1 : page individuelle du ticker ────────
+    # ── Tentative 1 : page individuelle — FILTRÉE par ticker ──
     for url in [
         f"{RICHBOURSE_BASE}/common/variation/index/{tk}",
         f"{RICHBOURSE_BASE}/common/mouvements/index/{tk}",
@@ -376,11 +350,11 @@ def fetch_cours_richbourse(ticker: str) -> dict:
                     col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
                     if col_px:
                         try:
-                            # ── Filtre par ticker si colonne disponible ──
+                            # Filtre par ticker si colonne dispo, sinon page dédiée = OK
                             if col_tk:
                                 subset = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
                             else:
-                                subset = df  # page dédiée au ticker → toutes les lignes lui appartiennent
+                                subset = df
                             subset = subset.dropna(subset=[col_px])
                             if subset.empty:
                                 continue
@@ -393,7 +367,7 @@ def fetch_cours_richbourse(ticker: str) -> dict:
         except Exception as e:
             erreurs.append(f"req {url}: {e}")
 
-    # ── Tentative 2 : tableau global palmares ────────────
+    # ── Tentative 2 : tableau global ──
     try:
         url2 = f"{RICHBOURSE_BASE}/common/variation/index"
         resp2 = requests.get(url2, headers=HEADERS_HTTP, timeout=15)
@@ -419,33 +393,22 @@ def fetch_cours_richbourse(ticker: str) -> dict:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_tech_richbourse(ticker: str) -> dict:
-    """
-    Scrape les indicateurs depuis richbourse.com/common/prevision-boursiere/synthese/TICKER
-    Retourne RSI numérique + positions qualitatives BB/EMA + tendance.
-    """
     if not HAS_BS4:
-        return {"source_tech": "manuel", "_erreur_tech": "beautifulsoup4 non installé — pip install beautifulsoup4 lxml"}
-
+        return {"source_tech": "manuel", "_erreur_tech": "beautifulsoup4 non installé"}
     tk = ticker.upper().strip()
     url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{tk}"
     try:
         resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
         if resp.status_code != 200:
-            return {"source_tech": "manuel", "_erreur_tech": f"HTTP {resp.status_code} sur {url}"}
-
-        soup = BeautifulSoup(resp.text, "html.parser")
+            return {"source_tech": "manuel", "_erreur_tech": f"HTTP {resp.status_code}"}
+        soup  = BeautifulSoup(resp.text, "html.parser")
         texte = soup.get_text(" ", strip=True)
-
-        # Vérifier que la page contient bien des données (pas page 404 ou login)
         if "rsi" not in texte.lower() and "bollinger" not in texte.lower():
-            return {"source_tech": "manuel", "_erreur_tech": f"Contenu inattendu sur {url} — ticker introuvable ou page vide"}
-
+            return {"source_tech": "manuel", "_erreur_tech": "Contenu inattendu"}
         result = {"source_tech": "auto_synthese"}
-
         m_rsi = _re.search(r"RSI\s*14\s*jours\s*est\s*de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_rsi:
             result["rsi"] = float(m_rsi.group(1).replace(",", "."))
-
         tl = texte.lower()
         if "au-dessus de la bande supérieure" in tl or "bande supérieure de bollinger" in tl:
             result["bb_position"] = "above_sup"
@@ -453,36 +416,25 @@ def fetch_tech_richbourse(ticker: str) -> dict:
             result["bb_position"] = "below_inf"
         else:
             result["bb_position"] = "inside"
-
         if "au-dessus de leur moyenne mobile à 20" in tl:
             result["ema20_position"] = "above"
         elif "en-dessous de leur moyenne mobile à 20" in tl:
             result["ema20_position"] = "below"
         else:
             result["ema20_position"] = "unknown"
-
         m_tend = _re.search(r"Tendance\s*[àa]\s*court\s*terme\s*:\s*(\w+)", texte, _re.IGNORECASE)
         m_conf = _re.search(r"indice de confiance de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_tend:
             result["tendance"] = m_tend.group(1).capitalize()
         if m_conf:
             result["confiance_tendance"] = float(m_conf.group(1).replace(",", "."))
-
         return result
-
     except Exception as e:
         return {"source_tech": "manuel", "_erreur_tech": str(e)}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)  # cache 1h
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique_richbourse(ticker: str, nb_jours: int = 120) -> pd.DataFrame:
-    """
-    Scrape l'historique des cours depuis richbourse.com.
-    URL : richbourse.com/common/variation/historique/TICKER
-
-    Utilisé pour calculer EMA20, BB numériques et variation 1 semaine
-    quand la page synthèse ne donne que des valeurs qualitatives.
-    """
     url = f"{RICHBOURSE_BASE}/common/variation/historique/{ticker.upper()}"
     try:
         resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
@@ -509,24 +461,15 @@ def fetch_historique_richbourse(ticker: str, nb_jours: int = 120) -> pd.DataFram
 
 
 def calcul_indicateurs_numeriques(df_hist: pd.DataFrame) -> dict:
-    """
-    Calcule RSI(14), BB(20,2), EMA(20) en Python pur depuis l'historique.
-    Utilisé en complément de fetch_tech_richbourse pour les valeurs numériques des BB.
-    """
     if df_hist.empty or len(df_hist) < 14:
         return {}
-
     close = df_hist["close"].values.astype(float)
     n = len(close)
-
-    # EMA20
     k = 2 / 21
     ema = [close[0]]
     for i in range(1, n):
         ema.append(close[i] * k + ema[-1] * (1 - k))
     ema20_val = ema[-1]
-
-    # RSI14
     deltas = np.diff(close)
     gains  = np.where(deltas > 0, deltas, 0.0)
     losses = np.where(deltas < 0, -deltas, 0.0)
@@ -539,8 +482,6 @@ def calcul_indicateurs_numeriques(df_hist: pd.DataFrame) -> dict:
         rsi_val = 100 - (100 / (1 + rs))
     else:
         rsi_val = 50.0
-
-    # BB(20,2)
     if n >= 20:
         win    = close[-20:]
         bb_mid = np.mean(win)
@@ -549,9 +490,7 @@ def calcul_indicateurs_numeriques(df_hist: pd.DataFrame) -> dict:
         bb_inf = bb_mid - 2 * bb_std
     else:
         bb_mid = close[-1]; bb_sup = close[-1]*1.05; bb_inf = close[-1]*0.95
-
     var_1s = ((close[-1] / close[-6]) - 1) * 100 if n >= 6 else 0.0
-
     return {
         "rsi":    round(rsi_val, 1),
         "ema20":  round(ema20_val, 0),
@@ -564,39 +503,20 @@ def calcul_indicateurs_numeriques(df_hist: pd.DataFrame) -> dict:
 
 
 def get_marche_data(ticker: str) -> dict:
-    """
-    Pipeline de collecte données :
-      1. Cours actuel  ← richbourse.com/common/variation/index
-      2. Indicateurs   ← richbourse.com/common/prevision-boursiere/synthese/TICKER
-                          (RSI et positions qualitatives BB/EMA déjà calculés)
-      3. Valeurs num.  ← historique + calcul Python (BB sup/inf en FCFA, var_1s)
-    Retourne dict unifié.
-    """
     tk = ticker.upper().strip()
     result = {}
-
-    # 1. Cours du jour
-    cours = fetch_cours_richbourse(tk)
-    result.update(cours)
-
-    # 2. Indicateurs depuis page synthèse (RSI numérique, BB position, tendance)
-    tech_synth = fetch_tech_richbourse(tk)
-    result.update(tech_synth)
-
-    # 3. Historique pour valeurs numériques BB / EMA / var_1s
+    result.update(fetch_cours_richbourse(tk))
+    result.update(fetch_tech_richbourse(tk))
     df_hist = fetch_historique_richbourse(tk)
     if not df_hist.empty:
         indics = calcul_indicateurs_numeriques(df_hist)
-        # On garde le RSI de la synthèse (plus précis, calculé par richbourse)
-        # mais on prend les valeurs numériques BB/EMA depuis l'historique
         for k_ind, v_ind in indics.items():
             if k_ind == "rsi" and "rsi" in result:
-                continue  # priorité RSI synthèse
+                continue
             result[k_ind] = v_ind
         result["source_tech"] = "auto"
     elif "rsi" in result:
         result["source_tech"] = "auto_synthese_only"
-
     return result
 
 
@@ -643,7 +563,6 @@ def valeur_intrinseque_dcf(bpa, croissance_bpa, taux):
 # SIDEBAR
 # ==========================================================
 st.sidebar.markdown("## ⚙️ Paramètres")
-
 mode = st.sidebar.radio("Mode d'affichage", ["🟢 Mode Simple", "🔬 Mode Expert"])
 mode_simple = mode == "🟢 Mode Simple"
 
@@ -667,8 +586,7 @@ if not mode_simple:
     st.sidebar.markdown("### 📐 DCF")
     taux_dcf_suggere = TAUX_DCF_SECTEUR.get(st.session_state.secteur_sel, 0.12)
     st.sidebar.caption(f"Taux suggéré pour **{st.session_state.secteur_sel}** : {taux_dcf_suggere*100:.0f}%")
-    TAUX_ACTUA = st.sidebar.slider("Taux d'actualisation DCF (%)", 8, 20,
-                                   int(taux_dcf_suggere * 100), 1) / 100
+    TAUX_ACTUA = st.sidebar.slider("Taux d'actualisation DCF (%)", 8, 20, int(taux_dcf_suggere * 100), 1) / 100
 else:
     TAUX_ACTUA = TAUX_DCF_SECTEUR.get(st.session_state.secteur_sel, 0.12)
 
@@ -678,14 +596,12 @@ RSI_SURACHAT = st.sidebar.slider("RSI — surachat", 60, 80, 70, 5)
 RSI_SURVENTE = st.sidebar.slider("RSI — survente", 20, 40, 30, 5)
 
 st.sidebar.markdown("---")
-# ── Tickers sauvegardés ────────────────────────────────────
 sauvegardes = list_tickers_sauvegardes()
 if sauvegardes:
     st.sidebar.markdown("### 💾 Fondamentaux sauvegardés")
     for s in sauvegardes[:10]:
         st.sidebar.markdown(
-            f"<span style='color:#79c0ff;font-family:IBM Plex Mono;font-size:0.85em'>"
-            f"**{s['ticker']}**</span> "
+            f"<span style='color:#79c0ff;font-family:IBM Plex Mono;font-size:0.85em'>**{s['ticker']}**</span> "
             f"<span style='color:#8b949e;font-size:0.78em'>{s['secteur'][:20]}</span><br>"
             f"<span style='color:#3d4a5c;font-size:0.72em'>màj {s['maj_at']}</span>",
             unsafe_allow_html=True
@@ -698,20 +614,14 @@ if st.sidebar.button("🗑️ Vider le screener (session)"):
     st.session_state.actions = []
     st.rerun()
 
-# Export DB
 if sauvegardes and st.sidebar.button("⬇️ Exporter fondamentaux (JSON)"):
     conn = get_db()
     all_rows = conn.execute("SELECT * FROM fondamentaux").fetchall()
     conn.close()
     data_export = [dict(r) for r in all_rows]
-    st.sidebar.download_button(
-        "Télécharger JSON",
-        json.dumps(data_export, ensure_ascii=False, indent=2),
-        "fondamentaux_brvm.json",
-        mime="application/json"
-    )
+    st.sidebar.download_button("Télécharger JSON", json.dumps(data_export, ensure_ascii=False, indent=2),
+                               "fondamentaux_brvm.json", mime="application/json")
 
-# Import DB
 uploaded_json = st.sidebar.file_uploader("📥 Importer fondamentaux (JSON)", type="json", key="json_import")
 if uploaded_json:
     try:
@@ -725,240 +635,225 @@ if uploaded_json:
     except Exception as e:
         st.sidebar.error(f"Erreur import : {e}")
 
-
 # ==========================================================
 # EN-TÊTE
 # ==========================================================
-st.title("⬡ Screener BRVM v2")
+st.title("⬡ Screener BRVM v3")
 st.caption("Cours automatiques (richbourse.com) • Indicateurs techniques calculés • Fondamentaux persistants (SQLite) • Graham + DCF")
 
 tab1, tab2, tab3, tab4 = st.tabs(["➕ Analyser un titre", "📊 Tableau de bord", "💾 Fondamentaux sauvegardés", "📖 Méthodologie"])
 
 
 # ==========================================================
-# TAB 1 — FORMULAIRE INTERACTIF
+# TAB 1 — FORMULAIRE
 # ==========================================================
 with tab1:
 
-    # ── SECTION 1 : Identification ─────────────────────────
     st.markdown("<div class='section-header'>1 — Identification & Contexte</div>", unsafe_allow_html=True)
 
-    # ── Selectbox avec "TICKER — NOM SOCIÉTÉ" ──────────────────
-TICKERS_LABELS  = {tk: f"{tk} — {TICKERS_BRVM[tk][0]}" for tk in TICKERS_LISTE}
-LABEL_TO_TICKER = {v: k for k, v in TICKERS_LABELS.items()}
+    # ── Sélection ticker + période + exercice ──────────────
+    col_sel, col_periode, col_annee = st.columns([3, 2, 1])
 
-col_sel, col_periode, col_annee = st.columns([3, 2, 1])
+    with col_sel:
+        ticker_labels_list = ["(Saisir manuellement)"] + [TICKERS_LABELS[tk] for tk in TICKERS_LISTE]
+        ticker_choice = st.selectbox(
+            "Ticker BRVM",
+            ticker_labels_list,
+            key="ticker_select",
+            help="Sélectionne automatiquement le secteur et charge le cours en temps réel."
+        )
+        if ticker_choice == "(Saisir manuellement)":
+            titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…",
+                                  key="titre_input_libre").upper().strip()
+        else:
+            titre = LABEL_TO_TICKER.get(ticker_choice, "")
 
-with col_sel:
-    ticker_labels_list = ["(Saisir manuellement)"] + [TICKERS_LABELS[tk] for tk in TICKERS_LISTE]
-    ticker_choice = st.selectbox(
-        "Ticker BRVM",
-        ticker_labels_list,
-        key="ticker_select",
-        help="Sélectionne automatiquement le secteur et charge le cours en temps réel."
-    )
-    if ticker_choice == "(Saisir manuellement)":
-        titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…",
-                              key="titre_input_libre").upper().strip()
-    else:
-        titre = LABEL_TO_TICKER.get(ticker_choice, "")
+    with col_periode:
+        periode_donnees = st.selectbox(
+            "Période disponible",
+            ["Annuel complet (2024 ou 2025)", "9 mois (T1+T2+T3)", "Semestriel (S1 — 6 mois)"],
+            key="periode_input"
+        )
+        st.session_state.periode_sel = periode_donnees
 
-with col_periode:
-    periode_donnees = st.selectbox(
-        "Période disponible",
-        ["Annuel complet (2024 ou 2025)", "9 mois (T1+T2+T3)", "Semestriel (S1 — 6 mois)"],
-        key="periode_input"
-    )
-    st.session_state.periode_sel = periode_donnees
+    with col_annee:
+        annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
+        st.session_state.annee_sel = annee_donnees
 
-with col_annee:
-    annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
-    st.session_state.annee_sel = annee_donnees
+    # ── Résolution automatique secteur / nom ──────────────
+    secteur_auto = get_secteur_from_ticker(titre) if titre else None
+    nom_societe  = get_nom_from_ticker(titre)     if titre else None
 
-# ── Résolution automatique ─────────────────────────────────
-secteur_auto = get_secteur_from_ticker(titre) if titre else None
-nom_societe  = get_nom_from_ticker(titre)     if titre else None
+    # ── Chargement données marché ─────────────────────────
+    marche_data = {}
+    source_tech = "manuel"
+    if titre and len(titre) >= 3:
+        with st.spinner(f"⏳ Chargement richbourse.com — **{titre}**…"):
+            marche_data = get_marche_data(titre.strip())
+            source_tech = marche_data.get("source_tech", "manuel")
 
-# ── Chargement cours + indicateurs ────────────────────────
-marche_data = {}
-source_tech = "manuel"
-if titre and len(titre) >= 3:
-    with st.spinner(f"⏳ Chargement richbourse.com — **{titre}**…"):
-        marche_data = get_marche_data(titre.strip())
-        source_tech = marche_data.get("source_tech", "manuel")
+    # ══════════════════════════════════════════════════════
+    #  ✦  CARTE D'IDENTITÉ DU TITRE  ✦
+    #  Toujours affichée dès qu'un ticker est sélectionné
+    # ══════════════════════════════════════════════════════
+    if titre and len(titre) >= 3:
+        couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
 
-# ══════════════════════════════════════════════════════════
-#  ✦  CARTE D'IDENTITÉ DU TITRE  ✦
-# ══════════════════════════════════════════════════════════
-if titre and len(titre) >= 3:
-    couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
+        # Badge secteur
+        if secteur_auto:
+            sect_badge = (
+                f'<span class="ticker-sector-badge" '
+                f'style="background:{couleur_sect}22;color:{couleur_sect};border:1px solid {couleur_sect}">'
+                f'{secteur_auto}</span>'
+            )
+        else:
+            sect_badge = (
+                '<span class="ticker-sector-badge" '
+                'style="background:#2d2500;color:#d29922;border:1px solid #d29922">'
+                '⚠️ Secteur inconnu — sélectionner manuellement</span>'
+            )
 
-# Bloc prix
-if "prix" in marche_data:
-    px_val = marche_data["prix"]
-    var_val = marche_data.get("variation_pct", 0)
+        # Nom société
+        if nom_societe:
+            nom_html = f'<div class="ticker-name">{nom_societe}</div>'
+        else:
+            nom_html = f'<div class="ticker-name" style="color:#8b949e">{titre} — société non référencée</div>'
 
-    signe = "+" if var_val >= 0 else ""
-    emoji = "▲" if var_val >= 0 else "▼"
-    variation_class = "positive" if var_val >= 0 else "negative"
-
-    html_prix = f"""
-    <div class="ticker-price-block">
-        <div class="ticker-price-value">
-            {px_val:,.0f}
-            <span class="ticker-currency">FCFA</span>
-        </div>
-        <div class="ticker-price-variation {variation_class}">
-            {emoji} {signe}{var_val:.2f}% aujourd'hui
-        </div>
-        <div class="ticker-price-source">
-            Source : richbourse.com (J-1)
-        </div>
-    </div>
-    """
-else:
-    html_prix = """
+        # Bloc prix (droit de la carte)
+        if "prix" in marche_data:
+            px_val  = marche_data["prix"]
+            var_val = marche_data.get("variation_pct", 0)
+            signe   = "+" if var_val >= 0 else ""
+            emoji   = "▲" if var_val >= 0 else "▼"
+            var_cls = "positive" if var_val >= 0 else "negative"
+            html_prix = f"""
             <div class="ticker-price-block">
-                <div style="color:#d29922;font-size:0.85em">
+                <div class="ticker-price-value">
+                    {px_val:,.0f}<span class="ticker-currency">FCFA</span>
+                </div>
+                <div class="ticker-price-variation {var_cls}">
+                    {emoji} {signe}{var_val:.2f}% aujourd'hui
+                </div>
+                <div class="ticker-price-source">Source : richbourse.com (J-1)</div>
+            </div>"""
+        else:
+            html_prix = """
+            <div class="ticker-price-block">
+                <div style="color:#d29922;font-size:0.85em;text-align:right">
                     ⚠️ Cours non disponible<br>Saisie manuelle requise
                 </div>
             </div>"""
 
-    sect_badge = (
-        f'<span class="ticker-sector-badge" '
-        f'style="background:{couleur_sect}22;color:{couleur_sect};border:1px solid {couleur_sect}">'
-        f'{secteur_auto}</span>'
-    ) if secteur_auto else (
-        '<span class="ticker-sector-badge" '
-        'style="background:#2d2500;color:#d29922;border:1px solid #d29922">'
-        '⚠️ Secteur inconnu</span>'
-    )
-    nom_html = (f'<div class="ticker-name">{nom_societe}</div>'
-                if nom_societe
-                else f'<div class="ticker-name" style="color:#8b949e">{titre} — société non référencée</div>')
+        # Rendu de la carte complète
+        st.markdown(f"""
+        <div class="ticker-card">
+            <div>
+                <div class="ticker-symbol">{titre}</div>
+                {nom_html}
+                {sect_badge}
+            </div>
+            {html_prix}
+        </div>""", unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div class="ticker-card">
-        <div>
-            <div class="ticker-symbol">{titre}</div>
-            {nom_html}
-            {sect_badge}
-        </div>
-        {html_prix}
-    </div>""", unsafe_allow_html=True)
+    # ── Secteur — clé dynamique liée au ticker (reset auto) ──
+    secteur_key   = f"secteur_{titre or 'none'}"
+    secteur_index = (list(PER_SECTORIELS.keys()).index(secteur_auto)
+                     if secteur_auto and secteur_auto in PER_SECTORIELS else 0)
 
-# ── Secteur (auto-sélectionné, modifiable) ─────────────────
-secteur_key = f"secteur_{titre or 'none'}"   # ← clé dynamique = reset à chaque ticker
-
-secteur_index = (list(PER_SECTORIELS.keys()).index(secteur_auto)
-                 if secteur_auto and secteur_auto in PER_SECTORIELS else 0)
-
-if secteur_auto:
-    sect_cols = st.columns([3, 1])
-    with sect_cols[0]:
-        secteur = st.selectbox(
-            "Secteur (détecté automatiquement — modifiable si besoin)",
-            list(PER_SECTORIELS.keys()),
-            index=secteur_index,
-            key=secteur_key,           # ← clé dynamique
-        )
-        if secteur == secteur_auto:
-            st.markdown(
-                f"<div class='sector-locked'>🔗 Lié au ticker <b>{titre}</b> — "
-                f"PER cible : <b>{PER_SECTORIELS[secteur]:.2f}x</b> · "
-                f"Taux DCF : <b>{TAUX_DCF_SECTEUR[secteur]*100:.0f}%</b></div>",
-                unsafe_allow_html=True
+    if secteur_auto:
+        sect_cols = st.columns([3, 1])
+        with sect_cols[0]:
+            secteur = st.selectbox(
+                "Secteur (détecté automatiquement — modifiable si besoin)",
+                list(PER_SECTORIELS.keys()),
+                index=secteur_index,
+                key=secteur_key,
             )
-    with sect_cols[1]:
-        st.markdown(f"""<div class="filter-block" style="margin-top:4px">
-        <div class="label-small">PER sectoriel</div>
-        <b style="font-family:'IBM Plex Mono';font-size:1.3em">{PER_SECTORIELS[secteur]:.2f}x</b>
-        </div>""", unsafe_allow_html=True)
-else:
-    secteur = st.selectbox(
-        "Secteur",
-        list(PER_SECTORIELS.keys()),
-        index=0,
-        key=secteur_key,               # ← clé dynamique
-        help="Ticker inconnu — sélectionnez manuellement."
-    )
+            if secteur == secteur_auto:
+                st.markdown(
+                    f"<div class='sector-locked'>🔗 Lié à <b>{titre}</b> — "
+                    f"PER cible : <b>{PER_SECTORIELS[secteur]:.2f}x</b> · "
+                    f"Taux DCF : <b>{TAUX_DCF_SECTEUR[secteur]*100:.0f}%</b></div>",
+                    unsafe_allow_html=True
+                )
+        with sect_cols[1]:
+            st.markdown(f"""<div class="filter-block" style="margin-top:4px">
+            <div class="label-small">PER sectoriel</div>
+            <b style="font-family:'IBM Plex Mono';font-size:1.3em">{PER_SECTORIELS[secteur]:.2f}x</b>
+            </div>""", unsafe_allow_html=True)
+    else:
+        secteur = st.selectbox(
+            "Secteur",
+            list(PER_SECTORIELS.keys()),
+            index=0,
+            key=secteur_key,
+            help="Ticker inconnu — sélectionnez manuellement."
+        )
 
-st.session_state.secteur_sel = secteur
-est_banque   = (secteur == SECTEUR_BANCAIRE)
-per_cible    = PER_SECTORIELS[secteur]
-taux_suggere = TAUX_DCF_SECTEUR[secteur]
+    st.session_state.secteur_sel = secteur
+    est_banque   = (secteur == SECTEUR_BANCAIRE)
+    per_cible    = PER_SECTORIELS[secteur]
+    taux_suggere = TAUX_DCF_SECTEUR[secteur]
 
-# ── Fondamentaux sauvegardés ───────────────────────────────
-fond_saved = None
-if titre and len(titre) >= 3:
-    fond_saved = load_fondamentaux(titre.strip())
+    # ── Fondamentaux sauvegardés ──────────────────────────
+    fond_saved = load_fondamentaux(titre.strip()) if titre and len(titre) >= 3 else None
 
-    # Indicateur de statut en temps réel
-    info_cols = st.columns(4)
-    with info_cols[0]:
-        st.markdown(f"""<div class="filter-block">
-        <div class="label-small">PER cible sectoriel</div>
-        <b style="font-family:'IBM Plex Mono';font-size:1.2em">{per_cible:.2f}x</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[1]:
-        st.markdown(f"""<div class="filter-block">
-        <div class="label-small">Taux DCF suggéré</div>
-        <b style="font-family:'IBM Plex Mono';font-size:1.2em;color:#79c0ff">{taux_suggere*100:.0f}%</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[2]:
-        src = marche_data.get("source_tech", "manuel")
-        if src == "auto":
-            msg, col = "✅ richbourse.com — cours + RSI + BB + EMA auto", "#3fb950"
-        elif src == "auto_synthese_only":
-            msg, col = "⚡ richbourse.com — RSI/BB/tendance (pas historique)", "#3fb950"
-        elif "prix" in marche_data:
-            msg, col = "⚡ Cours chargé — indicateurs à saisir", "#d29922"
-        elif titre and len(titre) >= 2:
-            msg, col = "⚠️ Données auto non disponibles — saisie manuelle", "#d29922"
-        else:
-            msg, col = "Saisissez un ticker pour charger les données", "#8b949e"
-        st.markdown(f"""<div class="filter-block">
-        <div class="label-small">Données de marché</div>
-        <b style="font-size:0.82em;color:{col}">{msg}</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[3]:
+    # ── Bandeau statut (4 colonnes) ───────────────────────
+    if titre and len(titre) >= 3:
+        info_cols = st.columns(4)
+        with info_cols[0]:
+            st.markdown(f"""<div class="filter-block">
+            <div class="label-small">PER cible sectoriel</div>
+            <b style="font-family:'IBM Plex Mono';font-size:1.2em">{per_cible:.2f}x</b>
+            </div>""", unsafe_allow_html=True)
+        with info_cols[1]:
+            st.markdown(f"""<div class="filter-block">
+            <div class="label-small">Taux DCF suggéré</div>
+            <b style="font-family:'IBM Plex Mono';font-size:1.2em;color:#79c0ff">{taux_suggere*100:.0f}%</b>
+            </div>""", unsafe_allow_html=True)
+        with info_cols[2]:
+            src = marche_data.get("source_tech", "manuel")
+            if src == "auto":
+                msg, col = "✅ richbourse.com — cours + RSI + BB + EMA", "#3fb950"
+            elif src == "auto_synthese_only":
+                msg, col = "⚡ richbourse.com — RSI/BB/tendance", "#3fb950"
+            elif "prix" in marche_data:
+                msg, col = "⚡ Cours chargé — indicateurs à saisir", "#d29922"
+            else:
+                msg, col = "⚠️ Données auto non disponibles", "#d29922"
+            st.markdown(f"""<div class="filter-block">
+            <div class="label-small">Données de marché</div>
+            <b style="font-size:0.82em;color:{col}">{msg}</b>
+            </div>""", unsafe_allow_html=True)
+        with info_cols[3]:
+            if fond_saved:
+                maj = fond_saved.get("maj_at", "?")
+                st.markdown(f"""<div class="filter-block">
+                <div class="label-small">Fondamentaux sauvegardés</div>
+                <b style="font-size:0.82em;color:#79c0ff">✅ Pré-rempli — màj {maj}</b>
+                </div>""", unsafe_allow_html=True)
+            else:
+                badge_b = "🏦 Formulaire bancaire actif" if est_banque else "📋 Formulaire standard"
+                col_b   = "#79c0ff" if est_banque else "#8b949e"
+                st.markdown(f"""<div class="filter-block">
+                <div class="label-small">Mode saisie</div>
+                <b style="font-size:0.85em;color:{col_b}">{badge_b}</b>
+                </div>""", unsafe_allow_html=True)
+
         if fond_saved:
-            maj = fond_saved.get("maj_at", "?")
-            st.markdown(f"""<div class="filter-block">
-            <div class="label-small">Fondamentaux sauvegardés</div>
-            <b style="font-size:0.82em;color:#79c0ff">✅ Pré-rempli — màj {maj}</b>
-            </div>""", unsafe_allow_html=True)
-        else:
-            badge_b = "🏦 Formulaire bancaire actif" if est_banque else "📋 Formulaire standard"
-            col_b   = "#79c0ff" if est_banque else "#8b949e"
-            st.markdown(f"""<div class="filter-block">
-            <div class="label-small">Mode saisie</div>
-            <b style="font-size:0.85em;color:{col_b}">{badge_b}</b>
+            st.markdown(f"""<div class="alert-info">
+            💾 Fondamentaux trouvés pour <b>{titre.upper()}</b> (màj {fond_saved.get('maj_at','?')}).
+            Le formulaire est pré-rempli. Modifiez les champs mis à jour puis cliquez <b>Analyser</b>.
             </div>""", unsafe_allow_html=True)
 
-    if fond_saved:
-        st.markdown(f"""<div class="alert-info">
-        💾 Fondamentaux trouvés pour <b>{titre.upper()}</b> (màj {fond_saved.get('maj_at','?')}).
-        Le formulaire est pré-rempli. Modifiez les champs mis à jour puis cliquez <b>Analyser</b>.
-        </div>""", unsafe_allow_html=True)
-
-    # ── Bloc debug (affiché si données auto en échec) ──────
-    if titre and len(titre) >= 3 and not marche_data.get("prix") and (
-        marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")
-    ):
-        with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
-            st.markdown("**Erreurs cours :**")
-            for e in marche_data.get("_erreurs_cours", ["(aucune erreur remontée)"] ):
-                st.code(str(e))
-            if marche_data.get("_erreur_tech"):
-                st.markdown("**Erreur indicateurs techniques :**")
-                st.code(str(marche_data["_erreur_tech"]))
-            st.markdown("""
-            **Solutions possibles :**
-            - Vérifier que `requirements.txt` contient : `requests`, `beautifulsoup4`, `lxml`
-            - richbourse.com peut bloquer les requêtes sans cookie de session (voir note dans Méthodologie)
-            - Tester localement avec `python -c "import requests; r=requests.get('https://www.richbourse.com/common/variation/index'); print(r.status_code)"`
-            """)
+        # Debug erreurs fetch
+        if not marche_data.get("prix") and (marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")):
+            with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
+                st.markdown("**Erreurs cours :**")
+                for e in marche_data.get("_erreurs_cours", ["(aucune)"]): st.code(str(e))
+                if marche_data.get("_erreur_tech"):
+                    st.markdown("**Erreur indicateurs :**")
+                    st.code(str(marche_data["_erreur_tech"]))
 
     st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
 
@@ -972,64 +867,55 @@ if titre and len(titre) >= 3:
         Le résultat saisi sera extrapolé automatiquement.
         </div>""", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════
     # FORMULAIRE DE SAISIE
-    # ══════════════════════════════════════════════════════════
-    # Valeurs par défaut : priorité fond_saved, sinon valeurs neutres
+    # ══════════════════════════════════════════════════════
     def fd(key, default):
-        """Récupère valeur sauvegardée ou défaut."""
         if fond_saved and key in fond_saved and fond_saved[key] is not None:
             return fond_saved[key]
         return default
 
     with st.form("saisie_titre", clear_on_submit=True):
 
-        # Cours — pré-rempli depuis fetch automatique si dispo
         prix_defaut = marche_data.get("prix", 1000.0)
-        prix_label  = f"💰 Prix actuel (FCFA)"
         if "prix" in marche_data:
-            var_affich = marche_data.get('variation_pct', 0)
-            signe = "+" if var_affich >= 0 else ""
-            prix_label = f"💰 Prix actuel (FCFA) — {signe}{var_affich:.2f}% aujourd'hui ✅"
+            var_affich = marche_data.get("variation_pct", 0)
+            signe_p = "+" if var_affich >= 0 else ""
+            prix_label = f"💰 Prix actuel (FCFA) — {signe_p}{var_affich:.2f}% aujourd'hui ✅"
+        else:
+            prix_label = "💰 Prix actuel (FCFA)"
 
         prix = st.number_input(prix_label, min_value=1.0, value=float(prix_defaut),
                                help="Cours chargé automatiquement depuis richbourse.com (ou saisi manuellement).")
 
-        # ── Section 2 : Fondamentaux ────────────────────────
+        # ── Section 2 : Fondamentaux ───────────────────────
         if est_banque:
             st.markdown("<div class='section-header'>2 — Données bancaires</div>", unsafe_allow_html=True)
             st.markdown("""<div class="alert-estimated">
             🏦 <b>Secteur bancaire — saisie simplifiée</b><br>
-            <span style="font-size:0.88em">Données disponibles dans les publications BRVM. Pré-rempli si déjà sauvegardé.</span>
+            <span style="font-size:0.88em">Pré-rempli si déjà sauvegardé.</span>
             </div>""", unsafe_allow_html=True)
-
             label_rn = {
                 "Annuel complet (2024 ou 2025)": "Résultat net annuel (millions FCFA)",
                 "9 mois (T1+T2+T3)":            "Résultat net 9 mois (millions FCFA)",
                 "Semestriel (S1 — 6 mois)":     "Résultat net S1 (millions FCFA)",
             }[periode_donnees]
-
             st.markdown("**📊 Compte de résultat**")
             bc1, bc2 = st.columns(2)
             with bc1:
-                pnb = st.number_input("PNB — Produit Net Bancaire (millions FCFA)",
-                                      min_value=1.0, value=fd("pnb", 5000.0))
+                pnb = st.number_input("PNB — Produit Net Bancaire (millions FCFA)", min_value=1.0, value=fd("pnb", 5000.0))
                 st.markdown("<div class='tooltip-text'>📍 Compte de résultat → Produit Net Bancaire</div>", unsafe_allow_html=True)
             with bc2:
                 resultat_saisi_b = st.number_input(label_rn, value=fd("resultat_b", 800.0))
                 st.markdown("<div class='tooltip-text'>📍 Compte de résultat → Résultat net</div>", unsafe_allow_html=True)
-
             st.markdown("**🏦 Bilan**")
             bc3, bc4 = st.columns(2)
             with bc3:
-                encours_credits = st.number_input("Encours crédits à la clientèle (millions FCFA)",
-                                                  min_value=1.0, value=fd("encours_credits", 30000.0))
+                encours_credits = st.number_input("Encours crédits à la clientèle (millions FCFA)", min_value=1.0, value=fd("encours_credits", 30000.0))
                 st.markdown("<div class='tooltip-text'>📍 Bilan → Créances sur la clientèle</div>", unsafe_allow_html=True)
             with bc4:
-                depots_clientele = st.number_input("Dépôts de la clientèle (millions FCFA)",
-                                                   min_value=1.0, value=fd("depots_clientele", 40000.0))
+                depots_clientele = st.number_input("Dépôts de la clientèle (millions FCFA)", min_value=1.0, value=fd("depots_clientele", 40000.0))
                 st.markdown("<div class='tooltip-text'>📍 Bilan → Dettes envers la clientèle</div>", unsafe_allow_html=True)
-
             st.markdown("**📌 Données complémentaires**")
             bx1, bx2, bx3 = st.columns(3)
             with bx1:
@@ -1040,24 +926,21 @@ if titre and len(titre) >= 3:
             with bx3:
                 dividende_b = st.number_input("Dividende par action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
                 bpa_prec_b  = st.number_input("BPA année précédente (FCFA)", value=fd("bpa_prec", 80.0))
-
         else:
             st.markdown("<div class='section-header'>2A — Compte de résultat</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='tooltip-text'>📍 Rapport {annee_donnees} — {periode_donnees}</div>", unsafe_allow_html=True)
-
             label_rn_std = {
                 "Annuel complet (2024 ou 2025)": "Résultat net annuel (millions FCFA)",
                 "9 mois (T1+T2+T3)":            "Résultat net 9 mois (millions FCFA)",
                 "Semestriel (S1 — 6 mois)":     "Résultat net S1 (millions FCFA)",
             }[periode_donnees]
-
             s1, s2, s3 = st.columns(3)
             with s1:
                 resultat_saisi = st.number_input(label_rn_std, value=fd("resultat", 500.0))
                 nombre_actions = st.number_input("Nombre d'actions (millions)", min_value=0.001, value=fd("nombre_actions", 10.0))
             with s2:
-                dividende  = st.number_input("Dividende par action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
-                bpa_prec   = st.number_input("BPA année précédente (FCFA)", value=fd("bpa_prec", 80.0))
+                dividende = st.number_input("Dividende par action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
+                bpa_prec  = st.number_input("BPA année précédente (FCFA)", value=fd("bpa_prec", 80.0))
             with s3:
                 if not mode_simple:
                     stabilite_bpa = st.selectbox("Régularité bénéfices (3-5 ans)",
@@ -1066,12 +949,9 @@ if titre and len(titre) >= 3:
                 else:
                     stabilite_bpa = "Stable"
 
-            if periode_donnees != "Annuel complet (2024 ou 2025)":
-                annee_bilan_ref_std = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
-                source_bilan = f"Bilan {annee_bilan_ref_std}"
-            else:
-                source_bilan = f"Bilan {annee_donnees}"
-
+            source_bilan = (f"Bilan {str(int(annee_donnees)-1) if annee_donnees != '2024' else '2024'}"
+                           if periode_donnees != "Annuel complet (2024 ou 2025)"
+                           else f"Bilan {annee_donnees}")
             st.markdown(f"<div class='section-header'>2B — Bilan ({source_bilan})</div>", unsafe_allow_html=True)
             b1, b2, b3 = st.columns(3)
             with b1:
@@ -1081,23 +961,21 @@ if titre and len(titre) >= 3:
             with b3:
                 dettes_totales = st.number_input("Dettes financières (millions FCFA)", min_value=0.0, value=fd("dettes_totales", 1000.0))
 
-        # ── Section 3 : Indicateurs techniques ─────────────
+        # ── Section 3 : Indicateurs techniques ────────────
         st.markdown("<div class='section-header'>3 — Indicateurs techniques</div>", unsafe_allow_html=True)
-
-        # Affichage statut source technique
         src = marche_data.get("source_tech", "manuel")
         if src in ("auto", "auto_synthese_only"):
-            bb_pos = marche_data.get("bb_position", "unknown")
-            ema_pos = marche_data.get("ema20_position", "unknown")
-            tendance = marche_data.get("tendance", "")
+            bb_pos      = marche_data.get("bb_position", "unknown")
+            ema_pos     = marche_data.get("ema20_position", "unknown")
+            tendance    = marche_data.get("tendance", "")
             confiance_t = marche_data.get("confiance_tendance", 0)
             details = []
             if bb_pos == "above_sup":   details.append("🔴 Prix > BB sup")
             elif bb_pos == "below_inf": details.append("🟢 Prix < BB inf")
             else:                       details.append("✅ Dans BB")
-            if ema_pos == "above":  details.append("↗ au-dessus EMA20")
-            elif ema_pos == "below": details.append("↘ en-dessous EMA20")
-            if tendance:            details.append(f"Tendance : {tendance} ({confiance_t:.0f}%)")
+            if ema_pos == "above":      details.append("↗ au-dessus EMA20")
+            elif ema_pos == "below":    details.append("↘ en-dessous EMA20")
+            if tendance:                details.append(f"Tendance : {tendance} ({confiance_t:.0f}%)")
             st.markdown(f"""<div class="alert-green">
             ✅ <b>Indicateurs richbourse.com</b> — RSI calculé + signaux BB/EMA<br>
             <span style="font-size:0.88em">{" &nbsp;|&nbsp; ".join(details)}</span>
@@ -1111,20 +989,15 @@ if titre and len(titre) >= 3:
         t1, t2, t3, t4 = st.columns(4)
         with t1:
             st.markdown("**📈 Bollinger Bands (20,2)**")
-            bb_sup_def = marche_data.get("bb_sup", 1100.0)
-            bb_inf_def = marche_data.get("bb_inf", 900.0)
-            bb_sup = st.number_input("BB supérieure (FCFA)", min_value=1.0, value=float(bb_sup_def))
-            bb_inf = st.number_input("BB inférieure (FCFA)", min_value=1.0, value=float(bb_inf_def))
+            bb_sup = st.number_input("BB supérieure (FCFA)", min_value=1.0, value=float(marche_data.get("bb_sup", 1100.0)))
+            bb_inf = st.number_input("BB inférieure (FCFA)", min_value=1.0, value=float(marche_data.get("bb_inf", 900.0)))
         with t2:
             st.markdown("**📊 EMA 20**")
-            ema20_def = marche_data.get("ema20", 980.0)
-            var1s_def = marche_data.get("var_1s", 0.0)
-            ema20  = st.number_input("EMA20 (FCFA)", min_value=1.0, value=float(ema20_def))
-            var_1s = st.number_input("Variation 1 semaine (%)", min_value=-30.0, max_value=30.0, value=float(var1s_def))
+            ema20  = st.number_input("EMA20 (FCFA)", min_value=1.0, value=float(marche_data.get("ema20", 980.0)))
+            var_1s = st.number_input("Variation 1 semaine (%)", min_value=-30.0, max_value=30.0, value=float(marche_data.get("var_1s", 0.0)))
         with t3:
             st.markdown("**🌡️ RSI (14)**")
-            rsi_def = marche_data.get("rsi", 50.0)
-            rsi = st.number_input("RSI", min_value=0.0, max_value=100.0, value=float(rsi_def))
+            rsi = st.number_input("RSI", min_value=0.0, max_value=100.0, value=float(marche_data.get("rsi", 50.0)))
             st.markdown(f"""<div class="filter-block">
             <div class="label-small">Seuils actifs</div>
             Surachat : <b style="color:#f85149">> {RSI_SURACHAT}</b><br>
@@ -1140,12 +1013,8 @@ if titre and len(titre) >= 3:
             <b style="font-size:1.3em;font-family:'IBM Plex Mono'">{TAUX_ACTUA*100:.0f}%</b>
             </div>""", unsafe_allow_html=True)
 
-        # ── Options de sauvegarde ───────────────────────────
         st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
-        save_fond = st.checkbox("💾 Sauvegarder les fondamentaux pour ce ticker", value=True,
-                                help="Les données fondamentales (résultats, bilan) seront sauvegardées "
-                                     "et pré-remplies automatiquement lors de la prochaine analyse.")
-
+        save_fond = st.checkbox("💾 Sauvegarder les fondamentaux pour ce ticker", value=True)
         submitted = st.form_submit_button("🔍 Analyser ce titre", use_container_width=True)
 
     # ==========================================================
@@ -1159,10 +1028,8 @@ if titre and len(titre) >= 3:
 
         per_cible_score = PER_CAP_SCORE[secteur]
 
-        # ── Extrapolation & ratios ──────────────────────────
         if est_banque:
-            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(
-                resultat_saisi_b, periode_donnees, secteur)
+            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(resultat_saisi_b, periode_donnees, secteur)
             nombre_actions   = nombre_actions_b
             capitaux_propres = capitaux_propres_b
             dividende        = dividende_b
@@ -1170,8 +1037,7 @@ if titre and len(titre) >= 3:
             stabilite_bpa    = "Stable"
             total_actif      = encours_credits + depots_clientele
         else:
-            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(
-                resultat_saisi, periode_donnees, secteur)
+            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(resultat_saisi, periode_donnees, secteur)
 
         donnees_estimees = confiance != "Annuelle"
         bpa          = resultat_annuel / nombre_actions
@@ -1181,7 +1047,6 @@ if titre and len(titre) >= 3:
         div_yield    = dividende / prix if prix > 0 else 0
         croissance_bpa = ((bpa - bpa_prec) / abs(bpa_prec) * 100) if bpa_prec != 0 else 0
 
-        # ── Valeur intrinsèque ──────────────────────────────
         graham_number   = np.sqrt(max(22.5 * bpa * valeur_book, 0)) if bpa > 0 else 0
         fair_value_comp = bpa * per_cible if bpa > 0 else 0
         fair_value_dcf  = valeur_intrinseque_dcf(bpa, croissance_bpa, TAUX_ACTUA) if bpa > 0 else 0
@@ -1198,18 +1063,17 @@ if titre and len(titre) >= 3:
         survalue   = prix > vi
         sous_marge = prix > prix_cible and not survalue
 
-        # ── Scores ─────────────────────────────────────────
-        score_per = np.clip(per_cible_score / per, 0, 1) if per > 0 else 0
-        score_pbr = np.clip(1.5 / pbr, 0, 1)
-        score_dy  = np.clip(div_yield / 0.08, 0, 1)
+        score_per   = np.clip(per_cible_score / per, 0, 1) if per > 0 else 0
+        score_pbr   = np.clip(1.5 / pbr, 0, 1)
+        score_dy    = np.clip(div_yield / 0.08, 0, 1)
         value_score = score_per * 0.40 + score_pbr * 0.35 + score_dy * 0.25
 
         if est_banque:
             b = BENCH_BANQUE
             roe            = (resultat_annuel / capitaux_propres) * 100
             marge_nette_b  = resultat_annuel / pnb if pnb > 0 else 0
-            score_marge    = np.clip(marge_nette_b / b["marge_nette_cible"], 0, 1)
             credits_depots = encours_credits / depots_clientele if depots_clientele > 0 else 0
+            score_marge    = np.clip(marge_nette_b / b["marge_nette_cible"], 0, 1)
             ecart_opt      = abs(credits_depots - b["credits_depots_opt"])
             score_cd       = np.clip(1 - ecart_opt / 0.40, 0, 1)
             score_roe_b    = np.clip(roe / (b["roe_cible"] * 100), 0, 1)
@@ -1233,17 +1097,14 @@ if titre and len(titre) >= 3:
         momentum_score = mom_fond * 0.60 + mom_prix * 0.40
         score_final    = W_VALUE * value_score + W_QUALITY * quality_score + W_MOMENTUM * momentum_score
 
-        # ── Technique ──────────────────────────────────────
         filtre_rsi    = rsi > RSI_SURACHAT
         filtre_bb_sup = prix > bb_sup
         bb_pct        = ((prix - bb_inf) / (bb_sup - bb_inf) * 100) if (bb_sup - bb_inf) > 0 else 50
         ecart_ma      = (prix / ema20 - 1) * 100
         rsi_survente  = rsi < RSI_SURVENTE
 
-        signal = get_signal(score_final, upside, survalue, sous_marge,
-                            filtre_rsi, filtre_bb_sup, var_1s)
+        signal = get_signal(score_final, upside, survalue, sous_marge, filtre_rsi, filtre_bb_sup, var_1s)
 
-        # ── Sauvegarde fondamentaux ─────────────────────────
         if save_fond:
             fond_dict = {
                 "secteur": secteur, "periode": periode_donnees, "annee": annee_donnees,
@@ -1252,43 +1113,29 @@ if titre and len(titre) >= 3:
                 "bpa_prec": bpa_prec, "capitaux_propres": capitaux_propres,
             }
             if est_banque:
-                fond_dict.update({
-                    "pnb": pnb, "resultat_b": resultat_saisi_b,
-                    "encours_credits": encours_credits, "depots_clientele": depots_clientele,
-                })
+                fond_dict.update({"pnb": pnb, "resultat_b": resultat_saisi_b,
+                                  "encours_credits": encours_credits, "depots_clientele": depots_clientele})
             else:
-                fond_dict.update({
-                    "resultat": resultat_saisi, "total_actif": total_actif,
-                    "dettes_totales": dettes_totales, "stabilite_bpa": stabilite_bpa,
-                })
+                fond_dict.update({"resultat": resultat_saisi, "total_actif": total_actif,
+                                  "dettes_totales": dettes_totales, "stabilite_bpa": stabilite_bpa})
             save_fondamentaux(titre.strip(), fond_dict)
 
-        # ══════════════════════════════════════════════════════
-        # AFFICHAGE RÉSULTAT
-        # ══════════════════════════════════════════════════════
+        # ── Affichage résultats ────────────────────────────
         st.markdown("---")
         badge_src = "<span class='badge-auto'>✅ AUTO richbourse</span>" if "prix" in marche_data else "<span class='badge-manual'>⚠️ Manuel</span>"
         badge_bq  = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;border-radius:10px;padding:1px 8px;font-size:0.72em;font-weight:700'>🏦 BANCAIRE</span>" if est_banque else ""
-
-        st.markdown(
-            f"### {titre.upper()} {badge_donnees(confiance)} {badge_src}{badge_bq}",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"### {titre.upper()} {badge_donnees(confiance)} {badge_src}{badge_bq}", unsafe_allow_html=True)
         if save_fond:
-            st.markdown("<div style='color:#79c0ff;font-size:0.82em'>💾 Fondamentaux sauvegardés.</div>",
-                        unsafe_allow_html=True)
+            st.markdown("<div style='color:#79c0ff;font-size:0.82em'>💾 Fondamentaux sauvegardés.</div>", unsafe_allow_html=True)
 
         if donnees_estimees:
             st.markdown(f"""<div class="alert-estimated">
             ⚠️ <b>Données extrapolées — {periode_donnees} {annee_donnees}</b><br>
-            <span style="font-size:0.9em">
-            {methode_extrapol}<br>
+            <span style="font-size:0.9em">{methode_extrapol}<br>
             Résultat saisi : <b>{(resultat_saisi_b if est_banque else resultat_saisi):.0f}M FCFA</b>
-            → Résultat annuel estimé : <b>{resultat_annuel:.0f}M FCFA</b>
-            </span>
+            → Annuel estimé : <b>{resultat_annuel:.0f}M FCFA</b></span>
             </div>""", unsafe_allow_html=True)
 
-        # Filtres techniques
         st.markdown("#### 📡 Filtres techniques")
         tc1, tc2, tc3 = st.columns(3)
         with tc1:
@@ -1302,7 +1149,7 @@ if titre and len(titre) >= 3:
             bc = "#f85149" if filtre_bb_sup else ("#3fb950" if prix < bb_inf else "#79c0ff")
             bl = "🔴 BLOQUÉ" if filtre_bb_sup else ("🟢 Sous BB inf" if prix < bb_inf else "✅ Dans les bandes")
             st.markdown(f"""<div class="filter-block">
-            <div class="label-small">Bollinger Bands — position</div>
+            <div class="label-small">Bollinger Bands</div>
             <b style="color:{bc}">{bb_pct:.0f}% de la bande</b><br>
             <span style="color:#8b949e;font-size:0.82em">{bb_inf:,.0f} | <b style="color:#e6edf3">{prix:,.0f}</b> | {bb_sup:,.0f}</span><br>
             <span style="color:{bc};font-size:0.85em">{bl}</span></div>""", unsafe_allow_html=True)
@@ -1315,89 +1162,50 @@ if titre and len(titre) >= 3:
             <span style="color:#8b949e;font-size:0.82em">Écart : {ecart_ma:+.1f}%</span><br>
             <span style="color:{mc};font-size:0.85em">{ml}</span></div>""", unsafe_allow_html=True)
 
-        # Verrou Graham
         st.markdown("#### 🔒 Verrou Graham")
         if survalue:
-            st.markdown(f"""<div class="alert-red">
-            🔒 Titre surévalué — Prix ({prix:,.0f}) > Valeur intrinsèque ({vi:,.0f} FCFA). Aucun achat.</div>""",
-            unsafe_allow_html=True)
+            st.markdown(f"""<div class="alert-red">🔒 Titre surévalué — Prix ({prix:,.0f}) > VI ({vi:,.0f} FCFA). Aucun achat.</div>""", unsafe_allow_html=True)
         elif sous_marge:
-            st.markdown(f"""<div class="alert-yellow">
-            ⚠️ Sous VI mais hors marge cible — Prix ({prix:,.0f}) entre VI ({vi:,.0f}) et cible
-            ({prix_cible:,.0f} FCFA, marge {MARGE_SECURITE*100:.0f}%). On surveille.</div>""",
-            unsafe_allow_html=True)
+            st.markdown(f"""<div class="alert-yellow">⚠️ Sous VI mais hors marge — Prix ({prix:,.0f}) entre VI ({vi:,.0f}) et cible ({prix_cible:,.0f} FCFA).</div>""", unsafe_allow_html=True)
         else:
-            st.markdown(f"""<div class="alert-green">
-            ✅ Marge validée ({MARGE_SECURITE*100:.0f}%) — Prix ({prix:,.0f}) &lt;
-            Cible ({prix_cible:,.0f} FCFA). Upside : <b>{upside:.1f}%</b></div>""",
-            unsafe_allow_html=True)
+            st.markdown(f"""<div class="alert-green">✅ Marge validée ({MARGE_SECURITE*100:.0f}%) — Prix ({prix:,.0f}) &lt; Cible ({prix_cible:,.0f} FCFA). Upside : <b>{upside:.1f}%</b></div>""", unsafe_allow_html=True)
 
-        # Ratios
         st.markdown("#### 📊 Ratios calculés")
         r1, r2, r3, r4, r5 = st.columns(5)
         with r1:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">BPA {'(estimé)' if donnees_estimees else ''}</div>
-            <b>{bpa:,.1f} FCFA</b></div>
-            <div class="ratio-box"><div class="label-small">PER</div><b>{per:.1f}x</b>
-            <span class="label-small"> cible: {per_cible:.2f}x</span></div>""",
-            unsafe_allow_html=True)
+            st.markdown(f"""<div class="ratio-box"><div class="label-small">BPA {'(est.)' if donnees_estimees else ''}</div><b>{bpa:,.1f} FCFA</b></div>
+            <div class="ratio-box"><div class="label-small">PER</div><b>{per:.1f}x</b><span class="label-small"> cible: {per_cible:.2f}x</span></div>""", unsafe_allow_html=True)
         with r2:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">P/B</div><b>{pbr:.2f}x</b></div>
-            <div class="ratio-box"><div class="label-small">Dividende</div>
-            <b>{div_yield*100:.1f}%</b></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="ratio-box"><div class="label-small">P/B</div><b>{pbr:.2f}x</b></div>
+            <div class="ratio-box"><div class="label-small">Dividende</div><b>{div_yield*100:.1f}%</b></div>""", unsafe_allow_html=True)
         with r3:
             if est_banque:
                 mn_c = "#3fb950" if marge_nette_b >= BENCH_BANQUE["marge_nette_cible"] else "#d29922"
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Marge nette / PNB {'(est.)' if donnees_estimees else ''}</div>
-                <b style="color:{mn_c}">{marge_nette_b*100:.1f}%</b>
-                <span class="label-small"> cible: {BENCH_BANQUE['marge_nette_cible']*100:.0f}%</span></div>
-                <div class="ratio-box">
-                <div class="label-small">ROE bancaire {'(est.)' if donnees_estimees else ''}</div>
-                <b>{roe:.1f}%</b>
-                <span class="label-small"> cible: {BENCH_BANQUE['roe_cible']*100:.0f}%</span></div>""",
-                unsafe_allow_html=True)
+                st.markdown(f"""<div class="ratio-box"><div class="label-small">Marge nette/PNB</div><b style="color:{mn_c}">{marge_nette_b*100:.1f}%</b></div>
+                <div class="ratio-box"><div class="label-small">ROE</div><b>{roe:.1f}%</b></div>""", unsafe_allow_html=True)
             else:
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">ROE {'(est.)' if donnees_estimees else ''}</div>
-                <b>{roe:.1f}%</b></div>
-                <div class="ratio-box">
-                <div class="label-small">ROA {'(est.)' if donnees_estimees else ''}</div>
-                <b>{roa:.1f}%</b></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="ratio-box"><div class="label-small">ROE</div><b>{roe:.1f}%</b></div>
+                <div class="ratio-box"><div class="label-small">ROA</div><b>{roa:.1f}%</b></div>""", unsafe_allow_html=True)
         with r4:
             if est_banque:
                 b = BENCH_BANQUE
                 cd_c = "#f85149" if credits_depots > b["credits_depots_max"] or credits_depots < b["credits_depots_min"] else ("#d29922" if abs(credits_depots - b["credits_depots_opt"]) > 0.15 else "#3fb950")
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Crédits / Dépôts</div>
-                <b style="color:{cd_c}">{credits_depots*100:.1f}%</b>
-                <span class="label-small"> optimal: 70-90%</span></div>
-                <div class="ratio-box"><div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""",
-                unsafe_allow_html=True)
+                st.markdown(f"""<div class="ratio-box"><div class="label-small">Crédits/Dépôts</div><b style="color:{cd_c}">{credits_depots*100:.1f}%</b></div>
+                <div class="ratio-box"><div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""", unsafe_allow_html=True)
             else:
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Dette/CP</div><b>{dette_cp:.2f}x</b></div>
-                <div class="ratio-box"><div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""",
-                unsafe_allow_html=True)
+                st.markdown(f"""<div class="ratio-box"><div class="label-small">Dette/CP</div><b>{dette_cp:.2f}x</b></div>
+                <div class="ratio-box"><div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""", unsafe_allow_html=True)
         with r5:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">Graham Number</div>
-            <b>{graham_number:,.0f} FCFA</b></div>
-            <div class="ratio-box"><div class="label-small">Valeur intrinsèque</div>
-            <b>{vi:,.0f} FCFA</b></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="ratio-box"><div class="label-small">Graham Number</div><b>{graham_number:,.0f} FCFA</b></div>
+            <div class="ratio-box"><div class="label-small">Valeur intrinsèque</div><b>{vi:,.0f} FCFA</b></div>""", unsafe_allow_html=True)
 
-        # Signal final
         couleur_sig = COULEURS.get(signal, "#8b949e")
         badge_est   = " <span class='badge-estimated'>⚠️ DONNÉES ESTIMÉES</span>" if donnees_estimees else ""
         badge_src2  = " <span class='badge-auto'>✅ Cours AUTO</span>" if "prix" in marche_data else ""
         st.markdown(f"""
         <div class="card" style="border-left:5px solid {couleur_sig};margin-top:16px">
         <div class="label-small">Signal de rotation{badge_est}{badge_src2}</div>
-        <div style="font-family:'IBM Plex Mono';font-size:1.5em;color:{couleur_sig};font-weight:700;margin:6px 0">
-            {signal}
-        </div>
+        <div style="font-family:'IBM Plex Mono';font-size:1.5em;color:{couleur_sig};font-weight:700;margin:6px 0">{signal}</div>
         <div style="color:#8b949e;font-size:0.83em">
             Score: <b style="color:#e6edf3">{score_final:.3f}</b> &nbsp;|&nbsp;
             Value: <b style="color:#e6edf3">{value_score:.3f}</b> &nbsp;|&nbsp;
@@ -1407,7 +1215,6 @@ if titre and len(titre) >= 3:
         </div>
         </div>""", unsafe_allow_html=True)
 
-        # Enregistrement session
         st.session_state.actions.append({
             "Titre":              titre.upper(),
             "Secteur":            secteur,
@@ -1456,11 +1263,11 @@ with tab2:
         df = df.sort_values("Score Final", ascending=False).reset_index(drop=True)
 
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Titres analysés",   len(df))
-        k2.metric("Signaux ACHAT",     len(df[df["Signal"].str.contains("ACHAT", na=False)]))
-        k3.metric("Titres bloqués 🔴", len(df[df["Signal"].str.startswith("🔴", na=False)]))
-        k4.metric("Données estimées ⚠️", len(df[df["Confiance"] != "Annuelle"]))
-        k5.metric("Cours auto ✅",     len(df[df["Source marché"] == "AUTO"]))
+        k1.metric("Titres analysés",      len(df))
+        k2.metric("Signaux ACHAT",        len(df[df["Signal"].str.contains("ACHAT", na=False)]))
+        k3.metric("Titres bloqués 🔴",    len(df[df["Signal"].str.startswith("🔴", na=False)]))
+        k4.metric("Données estimées ⚠️",  len(df[df["Confiance"] != "Annuelle"]))
+        k5.metric("Cours auto ✅",        len(df[df["Source marché"] == "AUTO"]))
 
         st.markdown("---")
         cols = ["Titre", "Secteur", "🏦 Bancaire", "Source marché", "Source technique", "Période", "Confiance",
@@ -1507,12 +1314,11 @@ with tab2:
         for _, row in df.iterrows():
             signal  = row["Signal"]
             couleur = COULEURS.get(signal, "#8b949e")
-            badge_rsi = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>RSI</span>" if row["Filtre RSI"] == "🔴 Bloqué" else ""
-            badge_bb  = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>BB</span>" if row["Filtre BB"] == "🔴 Bloqué" else ""
-            badge_g   = " <span style='background:#d29922;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>GRAHAM</span>" if row["Graham"] != "✅ OK" else ""
-            badge_est = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;padding:1px 6px;border-radius:8px;font-size:0.72em'>ESTIMÉ</span>" if row["Confiance"] != "Annuelle" else ""
-            badge_auto_m = " <span style='background:#1b2d1b;color:#3fb950;border:1px solid #3fb950;padding:1px 6px;border-radius:8px;font-size:0.72em'>AUTO</span>" if row["Source marché"] == "AUTO" else ""
-
+            badge_rsi    = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>RSI</span>"    if row["Filtre RSI"] == "🔴 Bloqué" else ""
+            badge_bb     = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>BB</span>"     if row["Filtre BB"]  == "🔴 Bloqué" else ""
+            badge_g      = " <span style='background:#d29922;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>GRAHAM</span>" if row["Graham"]     != "✅ OK"     else ""
+            badge_est    = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;padding:1px 6px;border-radius:8px;font-size:0.72em'>ESTIMÉ</span>" if row["Confiance"] != "Annuelle" else ""
+            badge_auto_m = " <span style='background:#1b2d1b;color:#3fb950;border:1px solid #3fb950;padding:1px 6px;border-radius:8px;font-size:0.72em'>AUTO</span>"   if row["Source marché"] == "AUTO" else ""
             st.markdown(f"""
             <div class="card" style="border-left:4px solid {couleur}">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -1538,8 +1344,8 @@ with tab2:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Screener BRVM")
         st.download_button("⬇️ Exporter en Excel", output.getvalue(), "Screener_BRVM.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True)
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           use_container_width=True)
 
 
 # ==========================================================
@@ -1548,12 +1354,10 @@ with tab2:
 with tab3:
     st.subheader("💾 Fondamentaux sauvegardés")
     sauv_list = list_tickers_sauvegardes()
-
     if not sauv_list:
         st.info("Aucun fondamental sauvegardé. Analysez un titre avec l'option 💾 cochée.")
     else:
         st.markdown(f"**{len(sauv_list)} titre(s) en base** — chargés automatiquement à la prochaine analyse.")
-
         for s in sauv_list:
             fond = load_fondamentaux(s["ticker"])
             if not fond:
@@ -1603,71 +1407,35 @@ with tab4:
     ```
     ┌─────────────────────────────────────────────────────────────┐
     │  DONNÉES DE MARCHÉ (automatiques) — Source : richbourse.com │
-    │                                                             │
-    │  1. Cours actuel + variation %                              │
-    │     ← /common/variation/index  (tableau HTML)              │
-    │                                                             │
-    │  2. Indicateurs techniques déjà calculés                    │
-    │     ← /common/prevision-boursiere/synthese/TICKER           │
-    │       • RSI 14 (valeur numérique exacte)                    │
-    │       • Position BB (au-dessus sup / en-dessous inf / dans) │
-    │       • Position EMA20                                      │
-    │       • Tendance + indice de confiance                      │
-    │                                                             │
-    │  3. Valeurs numériques BB sup/inf + var 1s                  │
-    │     ← /common/variation/historique/TICKER + calcul Python   │
-    │                                                             │
-    │  Cache : 10 min (indicateurs) / 30 min (cours) / 1h (hist) │
-    └───────────────────────────────┬─────────────────────────────┘
-                                    │
-    ┌───────────────────────────────▼─────────────────────────────┐
+    │  1. Cours actuel + variation %  ← /variation/index/TICKER   │
+    │  2. RSI/BB/EMA/Tendance         ← /prevision-boursiere/...  │
+    │  3. BB sup/inf numériques       ← /historique/TICKER        │
+    │  Cache : 10 min / 30 min / 1h                               │
+    └───────────────────┬─────────────────────────────────────────┘
+                        │
+    ┌───────────────────▼─────────────────────────────────────────┐
     │  FONDAMENTAUX (persistants) — SQLite local                  │
-    │  • Pré-rempli à chaque analyse si ticker déjà connu         │
-    │  • Mis à jour après chaque publication de résultats         │
-    │  • Export/Import JSON (backup)                              │
-    └───────────────────────────────┬─────────────────────────────┘
-                                    │
-    ┌───────────────────────────────▼─────────────────────────────┐
-    │  MOTEUR DE SCORING                                          │
-    │  Graham · DCF · PER sectoriel · RSI/BB · Momentum           │
+    │  Pré-rempli automatiquement · Export/Import JSON            │
+    └───────────────────┬─────────────────────────────────────────┘
+                        │
+    ┌───────────────────▼─────────────────────────────────────────┐
+    │  MOTEUR : Graham · DCF · PER sectoriel · RSI/BB · Momentum  │
     └─────────────────────────────────────────────────────────────┘
     ```
 
-    ### Pourquoi richbourse.com comme source unique ?
+    ### Corrections v3
+    | Bug | Cause | Fix |
+    |---|---|---|
+    | Cours toujours ABJC | `iloc[-1]` sans filtre ticker | Filtre `str.contains(tk)` avant `iloc[0]` |
+    | Secteur persiste d'un ticker à l'autre | `key="secteur_input"` fixe | `key=f"secteur_{titre}"` dynamique |
+    | Carte ticker absente / mal placée | HTML dans `else` du bloc prix | Carte toujours rendue, prix optionnel à l'intérieur |
 
-    | Critère | richbourse.com | brvm.org | sikafinance.com |
-    |---|---|---|---|
-    | HTML statique scrapable | ✅ | ❌ JS dynamique | ⚠️ partiel |
-    | RSI/BB/EMA déjà calculés | ✅ en texte HTML | ❌ | ❌ |
-    | Historique par ticker | ✅ `/historique/TICKER` | ❌ | ✅ mais login |
-    | Données J-1 fiables | ✅ | ✅ | ✅ |
-    | Mapping ticker → secteur | ✅ liste-societes | ❌ | ❌ |
-
-    **Note données J-1** : richbourse.com publie les cours de clôture de la veille.
-    Les indicateurs techniques (RSI, BB, EMA) sont donc calculés sur données J-1,
-    ce qui est parfaitement adapté à une stratégie de rotation hebdomadaire.
-
-    ### Référentiel tickers BRVM intégré
-
-    Le dictionnaire `TICKERS_BRVM` contient les ~47 sociétés cotées avec leur secteur.
-    La sélection du ticker **pré-remplit automatiquement** le secteur et le nom de la société.
-    Pour un nouveau ticker non répertorié, utiliser l'option **Saisir manuellement**.
-
-    ### Installation des dépendances
-
+    ### Installation
     ```bash
     pip install streamlit pandas numpy requests beautifulsoup4 openpyxl lxml
     ```
 
-    ### Persistance SQLite — Streamlit Cloud
-
-    Sur Streamlit Cloud, `fondamentaux_brvm.db` est éphémère (reset au redémarrage).
-    Utiliser **⬇️ Exporter JSON** régulièrement et **📥 Importer** après redéploiement.
-    Pour une persistance permanente : Supabase (PostgreSQL gratuit) ou Google Sheets API.
-
-    ---
-    ### Logique de scoring (inchangée)
-
+    ### Logique de scoring
     ```
     [FILTRE 1] RSI > seuil surachat      → 🔴 BLOQUÉ
     [FILTRE 2] Prix > BB supérieure      → 🔴 BLOQUÉ
