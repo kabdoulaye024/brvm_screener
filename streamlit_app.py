@@ -371,12 +371,21 @@ def fetch_cours_richbourse(ticker: str) -> dict:
                 tables = pd.read_html(StringIO(resp.text), flavor="lxml")
                 for df in tables:
                     df.columns = [str(c).strip().lower() for c in df.columns]
+                    col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action","titre"])), None)
                     col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close","cotation"])), None)
                     col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
                     if col_px:
                         try:
-                            px = _clean_num(df[col_px].dropna().iloc[-1])
-                            vr = _clean_num(df[col_var].dropna().iloc[-1]) if col_var else 0.0
+                            # ── Filtre par ticker si colonne disponible ──
+                            if col_tk:
+                                subset = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
+                            else:
+                                subset = df  # page dédiée au ticker → toutes les lignes lui appartiennent
+                            subset = subset.dropna(subset=[col_px])
+                            if subset.empty:
+                                continue
+                            px = _clean_num(subset[col_px].iloc[0])
+                            vr = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
                             if px > 0:
                                 return {"prix": px, "variation_pct": vr, "_source_url": url}
                         except Exception as e:
@@ -839,6 +848,8 @@ else:
     </div>""", unsafe_allow_html=True)
 
 # ── Secteur (auto-sélectionné, modifiable) ─────────────────
+secteur_key = f"secteur_{titre or 'none'}"   # ← clé dynamique = reset à chaque ticker
+
 secteur_index = (list(PER_SECTORIELS.keys()).index(secteur_auto)
                  if secteur_auto and secteur_auto in PER_SECTORIELS else 0)
 
@@ -847,7 +858,9 @@ if secteur_auto:
     with sect_cols[0]:
         secteur = st.selectbox(
             "Secteur (détecté automatiquement — modifiable si besoin)",
-            list(PER_SECTORIELS.keys()), index=secteur_index, key="secteur_input",
+            list(PER_SECTORIELS.keys()),
+            index=secteur_index,
+            key=secteur_key,           # ← clé dynamique
         )
         if secteur == secteur_auto:
             st.markdown(
@@ -863,7 +876,10 @@ if secteur_auto:
         </div>""", unsafe_allow_html=True)
 else:
     secteur = st.selectbox(
-        "Secteur", list(PER_SECTORIELS.keys()), index=0, key="secteur_input",
+        "Secteur",
+        list(PER_SECTORIELS.keys()),
+        index=0,
+        key=secteur_key,               # ← clé dynamique
         help="Ticker inconnu — sélectionnez manuellement."
     )
 
