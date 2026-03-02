@@ -331,62 +331,60 @@ def _clean_num(v):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
+    """
+    Scrape le cours actuel + variation depuis richbourse.com.
+    URL confirmée : /common/variation/index  (tableau global HTML)
+    Colonne ticker réelle : "symbole"
+    Colonne prix réelle   : "cours actuel"
+    """
     tk = ticker.upper().strip()
     erreurs = []
 
-    # ── Tentative 1 : page individuelle — FILTRÉE par ticker ──
-    for url in [
-        f"{RICHBOURSE_BASE}/common/variation/index/{tk}",
-        f"{RICHBOURSE_BASE}/common/mouvements/index/{tk}",
-    ]:
+    urls = [
+        f"{RICHBOURSE_BASE}/common/variation/index",           # principal
+        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",  # variante "A à Z"
+    ]
+
+    for url in urls:
         try:
             resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
-            if resp.status_code == 200:
-                tables = pd.read_html(StringIO(resp.text), flavor="lxml")
-                for df in tables:
-                    df.columns = [str(c).strip().lower() for c in df.columns]
-                    col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action","titre"])), None)
-                    col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close","cotation"])), None)
-                    col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
-                    if col_px:
-                        try:
-                            # Filtre par ticker si colonne dispo, sinon page dédiée = OK
-                            if col_tk:
-                                subset = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
-                            else:
-                                subset = df
-                            subset = subset.dropna(subset=[col_px])
-                            if subset.empty:
-                                continue
-                            px = _clean_num(subset[col_px].iloc[0])
-                            vr = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
-                            if px > 0:
-                                return {"prix": px, "variation_pct": vr, "_source_url": url}
-                        except Exception as e:
-                            erreurs.append(f"parse {url}: {e}")
+            if resp.status_code != 200:
+                erreurs.append(f"HTTP {resp.status_code} sur {url}")
+                continue
+
+            tables = pd.read_html(StringIO(resp.text), flavor="lxml")
+            for df in tables:
+                df.columns = [str(c).strip().lower() for c in df.columns]
+
+                # ── Colonne ticker : "symbole" sur richbourse ──────────
+                col_tk = next((c for c in df.columns
+                               if any(k in c for k in ["symbole", "ticker", "code"])), None)
+
+                # ── Colonne prix : "cours actuel" sur richbourse ───────
+                col_px = next((c for c in df.columns
+                               if any(k in c for k in ["cours actuel", "actuel",
+                                                        "cours", "clôture", "close"])), None)
+
+                # ── Colonne variation ──────────────────────────────────
+                col_var = next((c for c in df.columns
+                                if any(k in c for k in ["variation", "var"])), None)
+
+                if col_tk and col_px:
+                    # Correspondance exacte sur le symbole (ex: "SNTS")
+                    mask = df[col_tk].astype(str).str.upper().str.strip() == tk
+                    subset = df[mask].dropna(subset=[col_px])
+                    if subset.empty:
+                        continue
+                    try:
+                        px = _clean_num(subset[col_px].iloc[0])
+                        vr = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
+                        if px > 0:
+                            return {"prix": px, "variation_pct": vr, "_source_url": url}
+                    except Exception as e:
+                        erreurs.append(f"parse {url}: {e}")
+
         except Exception as e:
             erreurs.append(f"req {url}: {e}")
-
-    # ── Tentative 2 : tableau global ──
-    try:
-        url2 = f"{RICHBOURSE_BASE}/common/variation/index"
-        resp2 = requests.get(url2, headers=HEADERS_HTTP, timeout=15)
-        if resp2.status_code == 200:
-            tables2 = pd.read_html(StringIO(resp2.text), flavor="lxml")
-            for df in tables2:
-                df.columns = [str(c).strip().lower() for c in df.columns]
-                col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action","titre"])), None)
-                col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close"])), None)
-                col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
-                if col_tk and col_px:
-                    row = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
-                    if not row.empty:
-                        px = _clean_num(row[col_px].values[0])
-                        vr = _clean_num(row[col_var].values[0]) if col_var else 0.0
-                        if px > 0:
-                            return {"prix": px, "variation_pct": vr, "_source_url": url2}
-    except Exception as e:
-        erreurs.append(f"palmares: {e}")
 
     return {"_erreurs_cours": erreurs}
 
