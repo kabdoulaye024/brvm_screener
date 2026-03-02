@@ -199,6 +199,16 @@ COULEURS = {
     "🔴 BLOQUÉ — Prix > BB supérieure":    "#f85149",
 }
 
+COULEUR_SECTEUR = {
+    "Télécommunications":                   "#79c0ff",
+    "Services Financiers":                  "#ffa657",
+    "Services Publics":                     "#d2a8ff",
+    "Énergie":                              "#f0e68c",
+    "Industriels":                          "#8b949e",
+    "Consommation de base (hors Unilever)": "#3fb950",
+    "Consommation discrétionnaire":         "#ff7b72",
+}
+
 HEADERS_HTTP = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -687,71 +697,139 @@ with tab1:
     # ── SECTION 1 : Identification ─────────────────────────
     st.markdown("<div class='section-header'>1 — Identification & Contexte</div>", unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        # Selectbox avec tous les tickers connus + option saisie libre
-        ticker_options = ["(Saisir manuellement)"] + TICKERS_LISTE
-        ticker_choice = st.selectbox(
-            "Ticker BRVM",
-            ticker_options,
-            key="ticker_select",
-            help="Sélectionnez un ticker connu ou choisissez 'Saisir manuellement'"
-        )
-        if ticker_choice == "(Saisir manuellement)":
-            titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…", key="titre_input_libre").upper().strip()
-        else:
-            titre = ticker_choice
-            nom_societe = get_nom_from_ticker(titre)
-            if nom_societe:
-                st.markdown(f"<div class='tooltip-text'>🏢 {nom_societe}</div>", unsafe_allow_html=True)
+    # ── Selectbox avec "TICKER — NOM SOCIÉTÉ" ──────────────────
+TICKERS_LABELS  = {tk: f"{tk} — {TICKERS_BRVM[tk][0]}" for tk in TICKERS_LISTE}
+LABEL_TO_TICKER = {v: k for k, v in TICKERS_LABELS.items()}
 
-    # Auto-détection du secteur
-    secteur_auto = get_secteur_from_ticker(titre) if titre else None
+col_sel, col_periode, col_annee = st.columns([3, 2, 1])
 
-    with c2:
-        secteur_index = list(PER_SECTORIELS.keys()).index(secteur_auto) if secteur_auto and secteur_auto in PER_SECTORIELS else 0
+with col_sel:
+    ticker_labels_list = ["(Saisir manuellement)"] + [TICKERS_LABELS[tk] for tk in TICKERS_LISTE]
+    ticker_choice = st.selectbox(
+        "Ticker BRVM",
+        ticker_labels_list,
+        key="ticker_select",
+        help="Sélectionne automatiquement le secteur et charge le cours en temps réel."
+    )
+    if ticker_choice == "(Saisir manuellement)":
+        titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…",
+                              key="titre_input_libre").upper().strip()
+    else:
+        titre = LABEL_TO_TICKER.get(ticker_choice, "")
+
+with col_periode:
+    periode_donnees = st.selectbox(
+        "Période disponible",
+        ["Annuel complet (2024 ou 2025)", "9 mois (T1+T2+T3)", "Semestriel (S1 — 6 mois)"],
+        key="periode_input"
+    )
+    st.session_state.periode_sel = periode_donnees
+
+with col_annee:
+    annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
+    st.session_state.annee_sel = annee_donnees
+
+# ── Résolution automatique ─────────────────────────────────
+secteur_auto = get_secteur_from_ticker(titre) if titre else None
+nom_societe  = get_nom_from_ticker(titre)     if titre else None
+
+# ── Chargement cours + indicateurs ────────────────────────
+marche_data = {}
+source_tech = "manuel"
+if titre and len(titre) >= 3:
+    with st.spinner(f"⏳ Chargement richbourse.com — **{titre}**…"):
+        marche_data = get_marche_data(titre.strip())
+        source_tech = marche_data.get("source_tech", "manuel")
+
+# ══════════════════════════════════════════════════════════
+#  ✦  CARTE D'IDENTITÉ DU TITRE  ✦
+# ══════════════════════════════════════════════════════════
+if titre and len(titre) >= 3:
+    couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
+
+    # Bloc prix
+    if "prix" in marche_data:
+        px_val  = marche_data["prix"]
+        var_val = marche_data.get("variation_pct", 0)
+        signe   = "+" if var_val >= 0 else ""
+        var_cls = "ticker-price-var-up" if var_val >= 0 else "ticker-price-var-down"
+        emoji   = "▲" if var_val >= 0 else "▼"
+        html_prix = f"""
+            <div class="ticker-price-block">
+                <div class="ticker-price-value">{px_val:,.0f}
+                    <span style="font-size:0.5em;color:#8b949e"> FCFA</span></div>
+                <div class="{var_cls}">{emoji} {signe}{var_val:.2f}% aujourd'hui</div>
+                <div class="ticker-price-source">✅ richbourse.com (J‑1)</div>
+            </div>"""
+    else:
+        html_prix = """
+            <div class="ticker-price-block">
+                <div style="color:#d29922;font-size:0.85em">
+                    ⚠️ Cours non disponible<br>Saisie manuelle requise
+                </div>
+            </div>"""
+
+    sect_badge = (
+        f'<span class="ticker-sector-badge" '
+        f'style="background:{couleur_sect}22;color:{couleur_sect};border:1px solid {couleur_sect}">'
+        f'{secteur_auto}</span>'
+    ) if secteur_auto else (
+        '<span class="ticker-sector-badge" '
+        'style="background:#2d2500;color:#d29922;border:1px solid #d29922">'
+        '⚠️ Secteur inconnu</span>'
+    )
+    nom_html = (f'<div class="ticker-name">{nom_societe}</div>'
+                if nom_societe
+                else f'<div class="ticker-name" style="color:#8b949e">{titre} — société non référencée</div>')
+
+    st.markdown(f"""
+    <div class="ticker-card">
+        <div>
+            <div class="ticker-symbol">{titre}</div>
+            {nom_html}
+            {sect_badge}
+        </div>
+        {html_prix}
+    </div>""", unsafe_allow_html=True)
+
+# ── Secteur (auto-sélectionné, modifiable) ─────────────────
+secteur_index = (list(PER_SECTORIELS.keys()).index(secteur_auto)
+                 if secteur_auto and secteur_auto in PER_SECTORIELS else 0)
+
+if secteur_auto:
+    sect_cols = st.columns([3, 1])
+    with sect_cols[0]:
         secteur = st.selectbox(
-            "Secteur",
-            list(PER_SECTORIELS.keys()),
-            index=secteur_index,
-            key="secteur_input",
-            help="Détecté automatiquement selon le ticker. Modifiable si besoin."
+            "Secteur (détecté automatiquement — modifiable si besoin)",
+            list(PER_SECTORIELS.keys()), index=secteur_index, key="secteur_input",
         )
-        if secteur_auto and secteur_auto == secteur:
-            st.markdown("<div class='tooltip-text'>✅ Secteur détecté automatiquement</div>", unsafe_allow_html=True)
-        elif titre and not secteur_auto:
-            st.markdown("<div class='tooltip-text'>⚠️ Ticker inconnu — secteur à sélectionner manuellement</div>", unsafe_allow_html=True)
-        st.session_state.secteur_sel = secteur
+        if secteur == secteur_auto:
+            st.markdown(
+                f"<div class='sector-locked'>🔗 Lié au ticker <b>{titre}</b> — "
+                f"PER cible : <b>{PER_SECTORIELS[secteur]:.2f}x</b> · "
+                f"Taux DCF : <b>{TAUX_DCF_SECTEUR[secteur]*100:.0f}%</b></div>",
+                unsafe_allow_html=True
+            )
+    with sect_cols[1]:
+        st.markdown(f"""<div class="filter-block" style="margin-top:4px">
+        <div class="label-small">PER sectoriel</div>
+        <b style="font-family:'IBM Plex Mono';font-size:1.3em">{PER_SECTORIELS[secteur]:.2f}x</b>
+        </div>""", unsafe_allow_html=True)
+else:
+    secteur = st.selectbox(
+        "Secteur", list(PER_SECTORIELS.keys()), index=0, key="secteur_input",
+        help="Ticker inconnu — sélectionnez manuellement."
+    )
 
-    with c3:
-        periode_donnees = st.selectbox(
-            "Période disponible",
-            ["Annuel complet (2024 ou 2025)", "9 mois (T1+T2+T3)", "Semestriel (S1 — 6 mois)"],
-            key="periode_input"
-        )
-        st.session_state.periode_sel = periode_donnees
-    with c4:
-        annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
-        st.session_state.annee_sel = annee_donnees
+st.session_state.secteur_sel = secteur
+est_banque   = (secteur == SECTEUR_BANCAIRE)
+per_cible    = PER_SECTORIELS[secteur]
+taux_suggere = TAUX_DCF_SECTEUR[secteur]
 
-
-    est_banque   = (secteur == SECTEUR_BANCAIRE)
-    per_cible    = PER_SECTORIELS[secteur]
-    taux_suggere = TAUX_DCF_SECTEUR[secteur]
-
-    # ── Récupération automatique des données de marché ─────
-    marche_data   = {}
-    source_tech   = "manuel"
-
-    if titre and len(titre) >= 3:
-        with st.spinner(f"⏳ Chargement richbourse.com pour **{titre}**…"):
-            marche_data = get_marche_data(titre.strip())
-            source_tech = marche_data.get("source_tech", "manuel")
-
-    # ── Fondamentaux sauvegardés ───────────────────────────
-    fond_saved = None
-    if titre and len(titre) >= 3:
-        fond_saved = load_fondamentaux(titre.strip())
+# ── Fondamentaux sauvegardés ───────────────────────────────
+fond_saved = None
+if titre and len(titre) >= 3:
+    fond_saved = load_fondamentaux(titre.strip())
 
     # Indicateur de statut en temps réel
     info_cols = st.columns(4)
