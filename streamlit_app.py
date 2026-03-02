@@ -1231,11 +1231,35 @@ with tab2:
                 "Valeur intrinseque", "Prix cible", "Upside (%)",
                 "Score Final", "Filtre RSI", "Filtre BB", "Graham", "Signal"]
 
+        def color_score(val):
+            try:
+                v = float(val)
+                if v >= 0.60: return "background-color: #1b2d1b; color: #3fb950"
+                elif v >= 0.45: return "background-color: #2d2500; color: #e3b341"
+                else: return "background-color: #2d1b1b; color: #f85149"
+            except: return ""
+
+        def color_upside(val):
+            try:
+                v = float(val)
+                if v >= 20: return "background-color: #1b2d1b; color: #3fb950"
+                elif v >= 5: return "background-color: #2d2500; color: #e3b341"
+                else: return "background-color: #2d1b1b; color: #f85149"
+            except: return ""
+
+        def color_rsi(val):
+            try:
+                v = float(val)
+                if v > RSI_SURACHAT: return "background-color: #2d1b1b; color: #f85149"
+                elif v < RSI_SURVENTE: return "background-color: #1b2d1b; color: #3fb950"
+                else: return ""
+            except: return ""
+
         st.dataframe(
             df[cols].style
-                .background_gradient(subset=["Score Final"], cmap="RdYlGn")
-                .background_gradient(subset=["Upside (%)"], cmap="RdYlGn")
-                .background_gradient(subset=["RSI"], cmap="RdYlGn_r"),
+                .applymap(color_score,  subset=["Score Final"])
+                .applymap(color_upside, subset=["Upside (%)"])
+                .applymap(color_rsi,    subset=["RSI"]),
             use_container_width=True, height=420
         )
 
@@ -1406,4 +1430,3 @@ with tab4:
     [SCORE]    Value + Quality + Momentum → Signal final
     ```
     """)
-
