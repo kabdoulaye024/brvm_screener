@@ -51,6 +51,43 @@ st.markdown("""
     .badge-manual { display: inline-block; background: #2d2500; color: #d29922; border: 1px solid #d29922; border-radius: 10px; padding: 1px 8px; font-size: 0.72em; font-weight: 700; margin-left: 6px; vertical-align: middle; }
     .form-divider { border: none; border-top: 1px solid #30363d; margin: 16px 0; }
     .saved-chip { display: inline-block; background: #1f3a5f; color: #79c0ff; border: 1px solid #79c0ff; border-radius: 12px; padding: 2px 10px; font-size: 0.75em; font-weight: 700; }
+    /* ===== Ticker Price Block ===== */
+
+.ticker-price-block {
+    text-align: right;
+}
+
+.ticker-price-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.ticker-currency {
+    font-size: 0.55em;
+    color: #8b949e;
+    margin-left: 4px;
+}
+
+.ticker-price-variation {
+    margin-top: 6px;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.ticker-price-variation.positive {
+    color: #3fb950;
+}
+
+.ticker-price-variation.negative {
+    color: #f85149;
+}
+
+.ticker-price-source {
+    margin-top: 4px;
+    font-size: 0.75rem;
+    color: #8b949e;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -748,19 +785,31 @@ if titre and len(titre) >= 3:
     couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
 
     # Bloc prix
-    if "prix" in marche_data:
-        px_val  = marche_data["prix"]
-        var_val = marche_data.get("variation_pct", 0)
-        signe   = "+" if var_val >= 0 else ""
-        var_cls = "ticker-price-var-up" if var_val >= 0 else "ticker-price-var-down"
-        emoji   = "▲" if var_val >= 0 else "▼"
-        html_prix = f"""
-            <div class="ticker-price-block">
-                <div class="ticker-price-value">{px_val:,.0f}
-                    <span style="font-size:0.5em;color:#8b949e"> FCFA</span></div>
-                <div class="{var_cls}">{emoji} {signe}{var_val:.2f}% aujourd'hui</div>
-                <div class="ticker-price-source">✅ richbourse.com (J‑1)</div>
-            </div>"""
+if "prix" in marche_data:
+    px_val  = marche_data["prix"]
+    var_val = marche_data.get("variation_pct", 0)
+    signe   = "+" if var_val >= 0 else ""
+    emoji   = "▲" if var_val >= 0 else "▼"
+    variation_class = "positive" if var_val >= 0 else "negative"
+
+    html_prix = f"""
+        <div class="ticker-price-block">
+
+            <div class="ticker-price-value">
+                {px_val:,.0f}
+                <span class="ticker-currency">FCFA</span>
+            </div>
+
+            <div class="ticker-price-variation {variation_class}">
+                {emoji} {signe}{var_val:.2f}% aujourd'hui
+            </div>
+
+            <div class="ticker-price-source">
+                Source : richbourse.com (J-1)
+            </div>
+
+        </div>
+    """
     else:
         html_prix = """
             <div class="ticker-price-block">
