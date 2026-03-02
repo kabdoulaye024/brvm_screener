@@ -331,62 +331,80 @@ def _clean_num(v):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
-    """
-    Scrape le cours actuel + variation depuis richbourse.com.
-    URL confirmée : /common/variation/index  (tableau global HTML)
-    Colonne ticker réelle : "symbole"
-    Colonne prix réelle   : "cours actuel"
-    """
     tk = ticker.upper().strip()
     erreurs = []
+    debug_info = []
 
     urls = [
-        f"{RICHBOURSE_BASE}/common/variation/index",           # principal
-        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",  # variante "A à Z"
+        f"{RICHBOURSE_BASE}/common/variation/index",
+        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
+        f"{RICHBOURSE_BASE}/common/variation/histo",
     ]
+
+    # Variantes de noms de colonnes élargies (richbourse change parfois)
+    COL_TICKER_VARIANTS = ["symbole", "ticker", "code", "valeur", "titre", "libellé", "libelle", "action"]
+    COL_PRIX_VARIANTS   = ["cours actuel", "actuel", "dernier cours", "dernier", "cours",
+                           "clôture", "cloture", "close", "prix", "cotation"]
+    COL_VAR_VARIANTS    = ["variation", "var", "variation %", "var%", "évolution", "evolution"]
 
     for url in urls:
         try:
             resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
+            debug_info.append(f"HTTP {resp.status_code} — {url} — {len(resp.text)} chars")
+
             if resp.status_code != 200:
                 erreurs.append(f"HTTP {resp.status_code} sur {url}")
                 continue
 
             tables = pd.read_html(StringIO(resp.text), flavor="lxml")
-            for df in tables:
+            debug_info.append(f"  → {len(tables)} tableau(x) trouvé(s)")
+
+            for i, df in enumerate(tables):
                 df.columns = [str(c).strip().lower() for c in df.columns]
+                debug_info.append(f"  → Table {i} colonnes: {list(df.columns)}")
 
-                # ── Colonne ticker : "symbole" sur richbourse ──────────
-                col_tk = next((c for c in df.columns
-                               if any(k in c for k in ["symbole", "ticker", "code"])), None)
+                col_tk  = next((c for c in df.columns if any(k in c for k in COL_TICKER_VARIANTS)), None)
+                col_px  = next((c for c in df.columns if any(k in c for k in COL_PRIX_VARIANTS)), None)
+                col_var = next((c for c in df.columns if any(k in c for k in COL_VAR_VARIANTS)), None)
 
-                # ── Colonne prix : "cours actuel" sur richbourse ───────
-                col_px = next((c for c in df.columns
-                               if any(k in c for k in ["cours actuel", "actuel",
-                                                        "cours", "clôture", "close"])), None)
+                debug_info.append(f"    col_ticker={col_tk} | col_prix={col_px} | col_var={col_var}")
 
-                # ── Colonne variation ──────────────────────────────────
-                col_var = next((c for c in df.columns
-                                if any(k in c for k in ["variation", "var"])), None)
+                if not col_tk or not col_px:
+                    # Tentative fallback : chercher le ticker dans TOUTES les colonnes
+                    for col in df.columns:
+                        mask = df[col].astype(str).str.upper().str.strip() == tk
+                        if mask.any():
+                            debug_info.append(f"    → Ticker '{tk}' trouvé dans col '{col}' (fallback)")
+                            col_tk = col
+                            break
 
                 if col_tk and col_px:
-                    # Correspondance exacte sur le symbole (ex: "SNTS")
-                    mask = df[col_tk].astype(str).str.upper().str.strip() == tk
-                    subset = df[mask].dropna(subset=[col_px])
+                    mask    = df[col_tk].astype(str).str.upper().str.strip() == tk
+                    subset  = df[mask].dropna(subset=[col_px])
+                    debug_info.append(f"    → Lignes matchées pour {tk}: {len(subset)}")
+
                     if subset.empty:
+                        # Log quelques valeurs pour voir ce qui est disponible
+                        sample = df[col_tk].astype(str).str.upper().str.strip().head(5).tolist()
+                        debug_info.append(f"    → Exemples tickers dispo: {sample}")
                         continue
                     try:
-                        px = _clean_num(subset[col_px].iloc[0])
-                        vr = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
+                        px  = _clean_num(subset[col_px].iloc[0])
+                        vr  = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
                         if px > 0:
-                            return {"prix": px, "variation_pct": vr, "_source_url": url}
+                            return {
+                                "prix": px,
+                                "variation_pct": vr,
+                                "_source_url": url,
+                                "_debug_info": debug_info,
+                            }
                     except Exception as e:
-                        erreurs.append(f"parse {url}: {e}")
+                        erreurs.append(f"parse {url} table {i}: {e}")
 
         except Exception as e:
             erreurs.append(f"req {url}: {e}")
 
-    return {"_erreurs_cours": erreurs}
+    return {"_erreurs_cours": erreurs, "_debug_info": debug_info}
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -845,15 +863,21 @@ with tab1:
             </div>""", unsafe_allow_html=True)
 
         # Debug erreurs fetch
-        if not marche_data.get("prix") and (marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")):
-            with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
-                st.markdown("**Erreurs cours :**")
-                for e in marche_data.get("_erreurs_cours", ["(aucune)"]): st.code(str(e))
-                if marche_data.get("_erreur_tech"):
-                    st.markdown("**Erreur indicateurs :**")
-                    st.code(str(marche_data["_erreur_tech"]))
-
-    st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
+    if not marche_data.get("prix"):
+        with st.expander("🔧 Détails fetch automatique (debug)", expanded=True):
+        debug_lines = marche_data.get("_debug_info", [])
+            if debug_lines:
+            st.markdown("**Trace réseau :**")
+                for line in debug_lines:
+                st.code(line)
+            for e in marche_data.get("_erreurs_cours", []):
+            st.error(str(e))
+            if marche_data.get("_erreur_tech"):
+            st.error(str(marche_data["_erreur_tech"]))
+            if not debug_lines and not marche_data.get("_erreurs_cours"):
+                
+            st.warning("Aucune info de debug — la requête n'a peut-être pas été exécutée (cache actif). "
+                       "Videz le cache Streamlit avec le menu ⋮ → Clear cache.")
 
     if periode_donnees != "Annuel complet (2024 ou 2025)":
         annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
