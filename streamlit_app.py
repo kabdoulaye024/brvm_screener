@@ -785,7 +785,7 @@ if titre and len(titre) >= 3:
     couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
 
     # Bloc prix
-    if "prix" in marche_data:
+if "prix" in marche_data:
     px_val  = marche_data["prix"]
     var_val = marche_data.get("variation_pct", 0)
     signe   = "+" if var_val >= 0 else ""
