@@ -50,39 +50,15 @@ st.markdown("""
     .badge-manual { display: inline-block; background: #2d2500; color: #d29922; border: 1px solid #d29922; border-radius: 10px; padding: 1px 8px; font-size: 0.72em; font-weight: 700; margin-left: 6px; vertical-align: middle; }
     .form-divider { border: none; border-top: 1px solid #30363d; margin: 16px 0; }
     .saved-chip { display: inline-block; background: #1f3a5f; color: #79c0ff; border: 1px solid #79c0ff; border-radius: 12px; padding: 2px 10px; font-size: 0.75em; font-weight: 700; }
-    /* ── Carte ticker ── */
     .ticker-card {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 10px;
-        padding: 16px 20px;
-        margin: 12px 0 10px 0;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 12px;
+        background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+        padding: 16px 20px; margin: 12px 0 10px 0;
+        display: flex; justify-content: space-between; align-items: center;
+        flex-wrap: wrap; gap: 12px;
     }
-    .ticker-symbol {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 1.6em;
-        font-weight: 700;
-        color: #e6edf3;
-        letter-spacing: 2px;
-    }
-    .ticker-name {
-        font-size: 0.88em;
-        color: #8b949e;
-        margin-top: 4px;
-    }
-    .ticker-sector-badge {
-        display: inline-block;
-        border-radius: 10px;
-        padding: 2px 10px;
-        font-size: 0.75em;
-        font-weight: 700;
-        margin-top: 6px;
-    }
+    .ticker-symbol { font-family: 'IBM Plex Mono', monospace; font-size: 1.6em; font-weight: 700; color: #e6edf3; letter-spacing: 2px; }
+    .ticker-name { font-size: 0.88em; color: #8b949e; margin-top: 4px; }
+    .ticker-sector-badge { display: inline-block; border-radius: 10px; padding: 2px 10px; font-size: 0.75em; font-weight: 700; margin-top: 6px; }
     .ticker-price-block { text-align: right; }
     .ticker-price-value { font-family: 'IBM Plex Mono', monospace; font-size: 1.8rem; font-weight: 700; line-height: 1.2; color: #e6edf3; }
     .ticker-currency { font-size: 0.55em; color: #8b949e; margin-left: 4px; }
@@ -329,7 +305,7 @@ def _clean_num(v):
     """Nettoie les valeurs numériques richbourse : espaces insécables, virgules, %, etc."""
     return float(
         str(v)
-        .replace("\xa0", "")   # espace insécable HTML
+        .replace("\xa0", "")    # espace insécable HTML
         .replace("\u202f", "")  # espace fine insécable
         .replace(" ", "")       # espace normal
         .replace(",", ".")
@@ -347,7 +323,7 @@ def fetch_cours_richbourse(ticker: str) -> dict:
       var    → 'Variation'
     """
     tk = ticker.upper().strip()
-    erreurs  = []
+    erreurs    = []
     debug_info = []
 
     urls = [
@@ -355,7 +331,6 @@ def fetch_cours_richbourse(ticker: str) -> dict:
         f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
     ]
 
-    # Noms de colonnes connus + variantes de fallback
     COL_TICKER_VARIANTS = ["symbole", "ticker", "code", "valeur", "titre", "action"]
     COL_PRIX_VARIANTS   = ["cours actuel", "actuel", "dernier cours", "cours",
                            "clôture", "cloture", "close", "prix"]
@@ -374,7 +349,7 @@ def fetch_cours_richbourse(ticker: str) -> dict:
             debug_info.append(f"→ {len(tables)} tableau(x)")
 
             for i, df in enumerate(tables):
-                # Normalisation colonnes : minuscules + strip
+                # Normalisation colonnes : minuscules + strip + espaces insécables
                 df.columns = [
                     str(c).strip().lower()
                     .replace("\xa0", "").replace("\u202f", "")
@@ -382,7 +357,6 @@ def fetch_cours_richbourse(ticker: str) -> dict:
                 ]
                 debug_info.append(f"Table {i} colonnes: {list(df.columns)}")
 
-                # Détection colonnes
                 col_tk  = next((c for c in df.columns if any(k in c for k in COL_TICKER_VARIANTS)), None)
                 col_px  = next((c for c in df.columns if any(k in c for k in COL_PRIX_VARIANTS)), None)
                 col_var = next((c for c in df.columns if any(k in c for k in COL_VAR_VARIANTS)), None)
@@ -401,11 +375,9 @@ def fetch_cours_richbourse(ticker: str) -> dict:
                     debug_info.append("  → Colonnes ticker/prix introuvables, table ignorée")
                     continue
 
-                # Filtre sur le ticker exact
                 mask   = df[col_tk].astype(str).str.upper().str.strip() == tk
                 subset = df[mask].dropna(subset=[col_px])
 
-                # Log des tickers disponibles si pas de match
                 if subset.empty:
                     sample = df[col_tk].astype(str).str.upper().str.strip().head(8).tolist()
                     debug_info.append(f"  → '{tk}' non trouvé. Exemples dispo: {sample}")
@@ -484,14 +456,15 @@ def fetch_historique_richbourse(ticker: str, nb_jours: int = 120) -> pd.DataFram
         tables = pd.read_html(StringIO(resp.text))
         for df in tables:
             df.columns = [str(c).strip().lower() for c in df.columns]
-            col_date  = next((c for c in df.columns if any(k in c for k in ["date","séance","jour"])), None)
-            col_close = next((c for c in df.columns if any(k in c for k in ["cours","clôture","close","normal"])), None)
+            col_date  = next((c for c in df.columns if any(k in c for k in ["date", "séance", "jour"])), None)
+            col_close = next((c for c in df.columns if any(k in c for k in ["cours", "clôture", "close", "normal"])), None)
             if col_date and col_close:
                 df2 = df[[col_date, col_close]].copy()
                 df2.columns = ["date", "close"]
                 df2["date"]  = pd.to_datetime(df2["date"], errors="coerce", dayfirst=True)
                 df2["close"] = pd.to_numeric(
-                    df2["close"].astype(str).str.replace("\xa0","").str.replace(" ","").str.replace(",","."),
+                    df2["close"].astype(str)
+                    .str.replace("\xa0", "").str.replace(" ", "").str.replace(",", "."),
                     errors="coerce"
                 )
                 df2 = df2.dropna().sort_values("date").tail(nb_jours).reset_index(drop=True)
@@ -531,7 +504,9 @@ def calcul_indicateurs_numeriques(df_hist: pd.DataFrame) -> dict:
         bb_sup = bb_mid + 2 * bb_std
         bb_inf = bb_mid - 2 * bb_std
     else:
-        bb_mid = close[-1]; bb_sup = close[-1]*1.05; bb_inf = close[-1]*0.95
+        bb_mid = close[-1]
+        bb_sup = close[-1] * 1.05
+        bb_inf = close[-1] * 0.95
     var_1s = ((close[-1] / close[-6]) - 1) * 100 if n >= 6 else 0.0
     return {
         "rsi":    round(rsi_val, 1),
@@ -693,7 +668,6 @@ with tab1:
 
     st.markdown("<div class='section-header'>1 — Identification & Contexte</div>", unsafe_allow_html=True)
 
-    # ── Sélection ticker + période + exercice ──────────────
     col_sel, col_periode, col_annee = st.columns([3, 2, 1])
 
     with col_sel:
@@ -735,13 +709,11 @@ with tab1:
             source_tech = marche_data.get("source_tech", "manuel")
 
     # ══════════════════════════════════════════════════════
-    #  ✦  CARTE D'IDENTITÉ DU TITRE  ✦
-    #  Toujours affichée dès qu'un ticker est sélectionné
+    #  CARTE D'IDENTITÉ DU TITRE
     # ══════════════════════════════════════════════════════
     if titre and len(titre) >= 3:
         couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
 
-        # Badge secteur
         if secteur_auto:
             sect_badge = (
                 f'<span class="ticker-sector-badge" '
@@ -755,13 +727,11 @@ with tab1:
                 '⚠️ Secteur inconnu — sélectionner manuellement</span>'
             )
 
-        # Nom société
         if nom_societe:
             nom_html = f'<div class="ticker-name">{nom_societe}</div>'
         else:
             nom_html = f'<div class="ticker-name" style="color:#8b949e">{titre} — société non référencée</div>'
 
-        # Bloc prix (droit de la carte)
         if "prix" in marche_data:
             px_val  = marche_data["prix"]
             var_val = marche_data.get("variation_pct", 0)
@@ -786,7 +756,6 @@ with tab1:
                 </div>
             </div>"""
 
-        # Rendu de la carte complète
         st.markdown(f"""
         <div class="ticker-card">
             <div>
@@ -797,7 +766,7 @@ with tab1:
             {html_prix}
         </div>""", unsafe_allow_html=True)
 
-    # ── Secteur — clé dynamique liée au ticker (reset auto) ──
+    # ── Secteur ──────────────────────────────────────────
     secteur_key   = f"secteur_{titre or 'none'}"
     secteur_index = (list(PER_SECTORIELS.keys()).index(secteur_auto)
                      if secteur_auto and secteur_auto in PER_SECTORIELS else 0)
@@ -888,22 +857,26 @@ with tab1:
             Le formulaire est pré-rempli. Modifiez les champs mis à jour puis cliquez <b>Analyser</b>.
             </div>""", unsafe_allow_html=True)
 
-        # Debug erreurs fetch
-    # Dans le formulaire, remplacer le bloc debug expander par :
-    if not marche_data.get("prix") and titre and len(titre) >= 3:
-        with st.expander("🔧 Debug fetch automatique", expanded=True):
-            for line in marche_data.get("_debug_info", []):
-                st.code(line)
-            for e in marche_data.get("_erreurs_cours", []):
-                st.error(str(e))
-    if not marche_data.get("_debug_info") and not marche_data.get("_erreurs_cours"):
-                st.warning("⚠️ Aucune trace — cache actif. Faites Clear Cache puis rechargez.")
+        # ── Debug fetch (uniquement si cours absent) ──────
+        if not marche_data.get("prix"):
+            with st.expander("🔧 Debug fetch automatique", expanded=True):
+                debug_lines = marche_data.get("_debug_info", [])
+                if debug_lines:
+                    for line in debug_lines:
+                        st.code(line)
+                for e in marche_data.get("_erreurs_cours", []):
+                    st.error(str(e))
+                if not debug_lines and not marche_data.get("_erreurs_cours"):
+                    st.warning("⚠️ Aucune trace — cache actif. Menu ⋮ → Clear Cache puis rechargez.")
 
-        if periode_donnees != "Annuel complet (2024 ou 2025)":
-            annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2025"
-        msg_bilan = (f"Crédits et dépôts : référez-vous au bilan {annee_bilan_ref}."
-                    if est_banque
-                    else f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}.")
+    # ── Alerte période intermédiaire ──────────────────────
+    if titre and len(titre) >= 3 and periode_donnees != "Annuel complet (2024 ou 2025)":
+        annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
+        msg_bilan = (
+            f"Crédits et dépôts : référez-vous au bilan {annee_bilan_ref}."
+            if est_banque
+            else f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}."
+        )
         st.markdown(f"""<div class="alert-estimated">
         📅 <b>Publication intermédiaire détectée</b> — {msg_bilan}
         Le résultat saisi sera extrapolé automatiquement.
@@ -922,7 +895,7 @@ with tab1:
         prix_defaut = marche_data.get("prix", 1000.0)
         if "prix" in marche_data:
             var_affich = marche_data.get("variation_pct", 0)
-            signe_p = "+" if var_affich >= 0 else ""
+            signe_p    = "+" if var_affich >= 0 else ""
             prix_label = f"💰 Prix actuel (FCFA) — {signe_p}{var_affich:.2f}% aujourd'hui ✅"
         else:
             prix_label = "💰 Prix actuel (FCFA)"
@@ -985,15 +958,19 @@ with tab1:
                 bpa_prec  = st.number_input("BPA année précédente (FCFA)", value=fd("bpa_prec", 80.0))
             with s3:
                 if not mode_simple:
-                    stabilite_bpa = st.selectbox("Régularité bénéfices (3-5 ans)",
-                                                 ["Stable", "Volatil", "Exceptionnel"],
-                                                 index=["Stable","Volatil","Exceptionnel"].index(fd("stabilite_bpa","Stable")))
+                    stabilite_bpa = st.selectbox(
+                        "Régularité bénéfices (3-5 ans)",
+                        ["Stable", "Volatil", "Exceptionnel"],
+                        index=["Stable", "Volatil", "Exceptionnel"].index(fd("stabilite_bpa", "Stable"))
+                    )
                 else:
                     stabilite_bpa = "Stable"
 
-            source_bilan = (f"Bilan {str(int(annee_donnees)-1) if annee_donnees != '2024' else '2024'}"
-                           if periode_donnees != "Annuel complet (2024 ou 2025)"
-                           else f"Bilan {annee_donnees}")
+            source_bilan = (
+                f"Bilan {str(int(annee_donnees)-1) if annee_donnees != '2024' else '2024'}"
+                if periode_donnees != "Annuel complet (2024 ou 2025)"
+                else f"Bilan {annee_donnees}"
+            )
             st.markdown(f"<div class='section-header'>2B — Bilan ({source_bilan})</div>", unsafe_allow_html=True)
             b1, b2, b3 = st.columns(3)
             with b1:
@@ -1032,7 +1009,7 @@ with tab1:
         with t1:
             st.markdown("**📈 Bollinger Bands (20,2)**")
             bb_sup = st.number_input("BB supérieure (FCFA)", min_value=1.0, value=float(marche_data.get("bb_sup", 1100.0)))
-            bb_inf = st.number_input("BB inférieure (FCFA)", min_value=1.0, value=float(marche_data.get("bb_inf", 900.0)))
+            bb_inf = st.number_input("BB inférieure (FCFA)", min_value=1.0, value=float(marche_data.get("bb_inf",  900.0)))
         with t2:
             st.markdown("**📊 EMA 20**")
             ema20  = st.number_input("EMA20 (FCFA)", min_value=1.0, value=float(marche_data.get("ema20", 980.0)))
@@ -1322,23 +1299,23 @@ with tab2:
         def color_score(val):
             try:
                 v = float(val)
-                if v >= 0.60: return "background-color: #1b2d1b; color: #3fb950"
+                if v >= 0.60:   return "background-color: #1b2d1b; color: #3fb950"
                 elif v >= 0.45: return "background-color: #2d2500; color: #e3b341"
-                else: return "background-color: #2d1b1b; color: #f85149"
+                else:           return "background-color: #2d1b1b; color: #f85149"
             except: return ""
 
         def color_upside(val):
             try:
                 v = float(val)
-                if v >= 20: return "background-color: #1b2d1b; color: #3fb950"
-                elif v >= 5: return "background-color: #2d2500; color: #e3b341"
-                else: return "background-color: #2d1b1b; color: #f85149"
+                if v >= 20:   return "background-color: #1b2d1b; color: #3fb950"
+                elif v >= 5:  return "background-color: #2d2500; color: #e3b341"
+                else:         return "background-color: #2d1b1b; color: #f85149"
             except: return ""
 
         def color_rsi(val):
             try:
                 v = float(val)
-                if v > RSI_SURACHAT: return "background-color: #2d1b1b; color: #f85149"
+                if v > RSI_SURACHAT:  return "background-color: #2d1b1b; color: #f85149"
                 elif v < RSI_SURVENTE: return "background-color: #1b2d1b; color: #3fb950"
                 else: return ""
             except: return ""
@@ -1449,7 +1426,7 @@ with tab4:
     ```
     ┌─────────────────────────────────────────────────────────────┐
     │  DONNÉES DE MARCHÉ (automatiques) — Source : richbourse.com │
-    │  1. Cours actuel + variation %  ← /variation/index/TICKER   │
+    │  1. Cours actuel + variation %  ← /variation/index          │
     │  2. RSI/BB/EMA/Tendance         ← /prevision-boursiere/...  │
     │  3. BB sup/inf numériques       ← /historique/TICKER        │
     │  Cache : 10 min / 30 min / 1h                               │
@@ -1465,12 +1442,12 @@ with tab4:
     └─────────────────────────────────────────────────────────────┘
     ```
 
-    ### Corrections v3
+    ### Corrections v3.1
     | Bug | Cause | Fix |
     |---|---|---|
-    | Cours toujours ABJC | `iloc[-1]` sans filtre ticker | Filtre `str.contains(tk)` avant `iloc[0]` |
-    | Secteur persiste d'un ticker à l'autre | `key="secteur_input"` fixe | `key=f"secteur_{titre}"` dynamique |
-    | Carte ticker absente / mal placée | HTML dans `else` du bloc prix | Carte toujours rendue, prix optionnel à l'intérieur |
+    | Cours non chargé | Cache périmé + espaces `\\xa0` dans valeurs | `_clean_num` renforcé + colonnes normalisées |
+    | IndentationError ligne ~902 | Bloc debug mal indenté lors du copier-coller | Restructuration complète du bloc `if titre` |
+    | `msg_bilan` hors du `if` | Indentation cassée | Condition et corps réunifiés |
 
     ### Installation
     ```bash
