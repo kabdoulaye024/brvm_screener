@@ -784,33 +784,31 @@ if titre and len(titre) >= 3:
 if titre and len(titre) >= 3:
     couleur_sect = COULEUR_SECTEUR.get(secteur_auto, "#8b949e") if secteur_auto else "#8b949e"
 
-    # Bloc prix
+# Bloc prix
 if "prix" in marche_data:
-    px_val  = marche_data["prix"]
+    px_val = marche_data["prix"]
     var_val = marche_data.get("variation_pct", 0)
-    signe   = "+" if var_val >= 0 else ""
-    emoji   = "▲" if var_val >= 0 else "▼"
+
+    signe = "+" if var_val >= 0 else ""
+    emoji = "▲" if var_val >= 0 else "▼"
     variation_class = "positive" if var_val >= 0 else "negative"
 
     html_prix = f"""
-        <div class="ticker-price-block">
-
-            <div class="ticker-price-value">
-                {px_val:,.0f}
-                <span class="ticker-currency">FCFA</span>
-            </div>
-
-            <div class="ticker-price-variation {variation_class}">
-                {emoji} {signe}{var_val:.2f}% aujourd'hui
-            </div>
-
-            <div class="ticker-price-source">
-                Source : richbourse.com (J-1)
-            </div>
-
-        </div>"""
-    else:
-        html_prix = """
+    <div class="ticker-price-block">
+        <div class="ticker-price-value">
+            {px_val:,.0f}
+            <span class="ticker-currency">FCFA</span>
+        </div>
+        <div class="ticker-price-variation {variation_class}">
+            {emoji} {signe}{var_val:.2f}% aujourd'hui
+        </div>
+        <div class="ticker-price-source">
+            Source : richbourse.com (J-1)
+        </div>
+    </div>
+    """
+else:
+    html_prix = ""
             <div class="ticker-price-block">
                 <div style="color:#d29922;font-size:0.85em">
                     ⚠️ Cours non disponible<br>Saisie manuelle requise
