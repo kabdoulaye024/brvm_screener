@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st
 import pandas as pd
 import numpy as np
 import sqlite3
@@ -226,89 +226,111 @@ except ImportError:
 import re as _re
 
 
+def _clean_num(v) -> float:
+    return float(str(v).replace(" ","").replace(",",".").replace("\xa0","").replace("%","").strip())
+
+
 @st.cache_data(ttl=1800, show_spinner=False)  # cache 30 min
 def fetch_cours_richbourse(ticker: str) -> dict:
     """
-    Scrape le cours actuel + variation depuis la page palmares de richbourse.com.
-    URL : richbourse.com/common/variation/index  (tableau HTML)
-    Retourne dict: {prix, variation_pct, volume} ou {}
+    Scrape le cours actuel + variation depuis richbourse.com.
+    Essaie plusieurs URLs en cascade.
     """
-    url = f"{RICHBOURSE_BASE}/common/variation/index"
+    tk = ticker.upper().strip()
+    erreurs = []
+
+    # ── Tentative 1 : page individuelle du ticker ────────
+    for url in [
+        f"{RICHBOURSE_BASE}/common/variation/index/{tk}",
+        f"{RICHBOURSE_BASE}/common/mouvements/index/{tk}",
+    ]:
+        try:
+            resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
+            if resp.status_code == 200:
+                tables = pd.read_html(StringIO(resp.text), flavor="lxml")
+                for df in tables:
+                    df.columns = [str(c).strip().lower() for c in df.columns]
+                    col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close","cotation"])), None)
+                    col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
+                    if col_px:
+                        try:
+                            px = _clean_num(df[col_px].dropna().iloc[-1])
+                            vr = _clean_num(df[col_var].dropna().iloc[-1]) if col_var else 0.0
+                            if px > 0:
+                                return {"prix": px, "variation_pct": vr, "_source_url": url}
+                        except Exception as e:
+                            erreurs.append(f"parse {url}: {e}")
+        except Exception as e:
+            erreurs.append(f"req {url}: {e}")
+
+    # ── Tentative 2 : tableau global palmares ────────────
     try:
-        resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
-        resp.raise_for_status()
-        tables = pd.read_html(StringIO(resp.text))
-        tk = ticker.upper()
-        for df in tables:
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            # Cherche la colonne ticker/code + cours
-            col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action"])), None)
-            col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close"])), None)
-            col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","évolution","%"])), None)
-            if col_tk and col_px:
-                row = df[df[col_tk].astype(str).str.upper().str.strip() == tk]
-                if not row.empty:
-                    def clean_num(v):
-                        return float(str(v).replace(" ","").replace(",",".").replace("\xa0","").replace("%","").strip())
-                    prix_val = clean_num(row[col_px].values[0])
-                    var_val  = clean_num(row[col_var].values[0]) if col_var else 0.0
-                    return {"prix": prix_val, "variation_pct": var_val}
-    except Exception:
-        pass
-    return {}
+        url2 = f"{RICHBOURSE_BASE}/common/variation/index"
+        resp2 = requests.get(url2, headers=HEADERS_HTTP, timeout=15)
+        if resp2.status_code == 200:
+            tables2 = pd.read_html(StringIO(resp2.text), flavor="lxml")
+            for df in tables2:
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action","titre"])), None)
+                col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close"])), None)
+                col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
+                if col_tk and col_px:
+                    row = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
+                    if not row.empty:
+                        px = _clean_num(row[col_px].values[0])
+                        vr = _clean_num(row[col_var].values[0]) if col_var else 0.0
+                        if px > 0:
+                            return {"prix": px, "variation_pct": vr, "_source_url": url2}
+    except Exception as e:
+        erreurs.append(f"palmares: {e}")
+
+    return {"_erreurs_cours": erreurs}
 
 
-@st.cache_data(ttl=600, show_spinner=False)  # cache 10 min — indicateurs frais
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_tech_richbourse(ticker: str) -> dict:
     """
-    Scrape la page de prévision/synthèse richbourse.com qui expose
-    les indicateurs techniques déjà calculés en texte HTML.
-
-    URL : richbourse.com/common/prevision-boursiere/synthese/TICKER
-
-    Extrait :
-      - RSI 14 (valeur numérique)
-      - Position par rapport aux BB (au-dessus sup / en-dessous inf / dans les bandes)
-      - EMA20 (depuis historique si nécessaire)
-      - Variation 1 semaine
-      - Tendance + confiance
+    Scrape les indicateurs depuis richbourse.com/common/prevision-boursiere/synthese/TICKER
+    Retourne RSI numérique + positions qualitatives BB/EMA + tendance.
     """
     if not HAS_BS4:
-        return {"source_tech": "manuel", "_erreur": "beautifulsoup4 non installé"}
+        return {"source_tech": "manuel", "_erreur_tech": "beautifulsoup4 non installé — pip install beautifulsoup4 lxml"}
 
-    url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{ticker.upper()}"
+    tk = ticker.upper().strip()
+    url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{tk}"
     try:
         resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
         if resp.status_code != 200:
-            return {"source_tech": "manuel"}
+            return {"source_tech": "manuel", "_erreur_tech": f"HTTP {resp.status_code} sur {url}"}
 
         soup = BeautifulSoup(resp.text, "html.parser")
         texte = soup.get_text(" ", strip=True)
 
+        # Vérifier que la page contient bien des données (pas page 404 ou login)
+        if "rsi" not in texte.lower() and "bollinger" not in texte.lower():
+            return {"source_tech": "manuel", "_erreur_tech": f"Contenu inattendu sur {url} — ticker introuvable ou page vide"}
+
         result = {"source_tech": "auto_synthese"}
 
-        # ── RSI ─────────────────────────────────────────────
         m_rsi = _re.search(r"RSI\s*14\s*jours\s*est\s*de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_rsi:
             result["rsi"] = float(m_rsi.group(1).replace(",", "."))
 
-        # ── Bollinger — position qualitative ────────────────
-        if "au-dessus de la bande supérieure" in texte.lower() or "bande supérieure de bollinger" in texte.lower():
+        tl = texte.lower()
+        if "au-dessus de la bande supérieure" in tl or "bande supérieure de bollinger" in tl:
             result["bb_position"] = "above_sup"
-        elif "en-dessous de la bande inférieure" in texte.lower() or "bande inférieure de bollinger" in texte.lower():
+        elif "en-dessous de la bande inférieure" in tl or "bande inférieure de bollinger" in tl:
             result["bb_position"] = "below_inf"
         else:
             result["bb_position"] = "inside"
 
-        # ── EMA20 — position qualitative ────────────────────
-        if "au-dessus de leur moyenne mobile à 20" in texte.lower():
+        if "au-dessus de leur moyenne mobile à 20" in tl:
             result["ema20_position"] = "above"
-        elif "en-dessous de leur moyenne mobile à 20" in texte.lower():
+        elif "en-dessous de leur moyenne mobile à 20" in tl:
             result["ema20_position"] = "below"
         else:
             result["ema20_position"] = "unknown"
 
-        # ── Tendance ─────────────────────────────────────────
         m_tend = _re.search(r"Tendance\s*[àa]\s*court\s*terme\s*:\s*(\w+)", texte, _re.IGNORECASE)
         m_conf = _re.search(r"indice de confiance de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_tend:
@@ -319,7 +341,7 @@ def fetch_tech_richbourse(ticker: str) -> dict:
         return result
 
     except Exception as e:
-        return {"source_tech": "manuel", "_erreur": str(e)}
+        return {"source_tech": "manuel", "_erreur_tech": str(e)}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # cache 1h
@@ -578,7 +600,7 @@ if uploaded_json:
 # EN-TÊTE
 # ==========================================================
 st.title("⬡ Screener BRVM v2")
-st.caption("Cours automatiques (brvm.org) • Indicateurs techniques calculés • Fondamentaux persistants (SQLite) • Graham + DCF")
+st.caption("Cours automatiques (richbourse.com) • Indicateurs techniques calculés • Fondamentaux persistants (SQLite) • Graham + DCF")
 
 tab1, tab2, tab3, tab4 = st.tabs(["➕ Analyser un titre", "📊 Tableau de bord", "💾 Fondamentaux sauvegardés", "📖 Méthodologie"])
 
@@ -680,6 +702,24 @@ with tab1:
         💾 Fondamentaux trouvés pour <b>{titre.upper()}</b> (màj {fond_saved.get('maj_at','?')}).
         Le formulaire est pré-rempli. Modifiez les champs mis à jour puis cliquez <b>Analyser</b>.
         </div>""", unsafe_allow_html=True)
+
+    # ── Bloc debug (affiché si données auto en échec) ──────
+    if titre and len(titre) >= 2 and not marche_data.get("prix") and (
+        marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")
+    ):
+        with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
+            st.markdown("**Erreurs cours :**")
+            for e in marche_data.get("_erreurs_cours", ["(aucune erreur remontée)"] ):
+                st.code(str(e))
+            if marche_data.get("_erreur_tech"):
+                st.markdown("**Erreur indicateurs techniques :**")
+                st.code(str(marche_data["_erreur_tech"]))
+            st.markdown("""
+            **Solutions possibles :**
+            - Vérifier que `requirements.txt` contient : `requests`, `beautifulsoup4`, `lxml`
+            - richbourse.com peut bloquer les requêtes sans cookie de session (voir note dans Méthodologie)
+            - Tester localement avec `python -c "import requests; r=requests.get('https://www.richbourse.com/common/variation/index'); print(r.status_code)"`
+            """)
 
     st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
 
@@ -1366,3 +1406,4 @@ with tab4:
     [SCORE]    Value + Quality + Momentum → Signal final
     ```
     """)
+
