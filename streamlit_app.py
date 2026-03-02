@@ -326,83 +326,109 @@ except ImportError:
 import re as _re
 
 def _clean_num(v):
-    return float(str(v).replace(" ", "").replace(",", ".").replace("\xa0", "").replace("%", "").strip())
+    """Nettoie les valeurs numériques richbourse : espaces insécables, virgules, %, etc."""
+    return float(
+        str(v)
+        .replace("\xa0", "")   # espace insécable HTML
+        .replace("\u202f", "")  # espace fine insécable
+        .replace(" ", "")       # espace normal
+        .replace(",", ".")
+        .replace("%", "")
+        .strip()
+    )
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
+    """
+    Colonnes confirmées au 2025-03 :
+      ticker → 'Symbole'
+      prix   → 'Cours actuel'
+      var    → 'Variation'
+    """
     tk = ticker.upper().strip()
-    erreurs = []
+    erreurs  = []
     debug_info = []
 
     urls = [
         f"{RICHBOURSE_BASE}/common/variation/index",
         f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
-        f"{RICHBOURSE_BASE}/common/variation/histo",
     ]
 
-    # Variantes de noms de colonnes élargies (richbourse change parfois)
-    COL_TICKER_VARIANTS = ["symbole", "ticker", "code", "valeur", "titre", "libellé", "libelle", "action"]
-    COL_PRIX_VARIANTS   = ["cours actuel", "actuel", "dernier cours", "dernier", "cours",
-                           "clôture", "cloture", "close", "prix", "cotation"]
-    COL_VAR_VARIANTS    = ["variation", "var", "variation %", "var%", "évolution", "evolution"]
+    # Noms de colonnes connus + variantes de fallback
+    COL_TICKER_VARIANTS = ["symbole", "ticker", "code", "valeur", "titre", "action"]
+    COL_PRIX_VARIANTS   = ["cours actuel", "actuel", "dernier cours", "cours",
+                           "clôture", "cloture", "close", "prix"]
+    COL_VAR_VARIANTS    = ["variation", "var", "évolution", "evolution"]
 
     for url in urls:
         try:
             resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
-            debug_info.append(f"HTTP {resp.status_code} — {url} — {len(resp.text)} chars")
+            debug_info.append(f"HTTP {resp.status_code} — {len(resp.text)} chars — {url}")
 
             if resp.status_code != 200:
                 erreurs.append(f"HTTP {resp.status_code} sur {url}")
                 continue
 
             tables = pd.read_html(StringIO(resp.text), flavor="lxml")
-            debug_info.append(f"  → {len(tables)} tableau(x) trouvé(s)")
+            debug_info.append(f"→ {len(tables)} tableau(x)")
 
             for i, df in enumerate(tables):
-                df.columns = [str(c).strip().lower() for c in df.columns]
-                debug_info.append(f"  → Table {i} colonnes: {list(df.columns)}")
+                # Normalisation colonnes : minuscules + strip
+                df.columns = [
+                    str(c).strip().lower()
+                    .replace("\xa0", "").replace("\u202f", "")
+                    for c in df.columns
+                ]
+                debug_info.append(f"Table {i} colonnes: {list(df.columns)}")
 
+                # Détection colonnes
                 col_tk  = next((c for c in df.columns if any(k in c for k in COL_TICKER_VARIANTS)), None)
                 col_px  = next((c for c in df.columns if any(k in c for k in COL_PRIX_VARIANTS)), None)
                 col_var = next((c for c in df.columns if any(k in c for k in COL_VAR_VARIANTS)), None)
 
-                debug_info.append(f"    col_ticker={col_tk} | col_prix={col_px} | col_var={col_var}")
+                debug_info.append(f"  col_ticker={col_tk} | col_prix={col_px} | col_var={col_var}")
 
-                if not col_tk or not col_px:
-                    # Tentative fallback : chercher le ticker dans TOUTES les colonnes
+                # Fallback : chercher le ticker dans toutes les colonnes
+                if not col_tk:
                     for col in df.columns:
-                        mask = df[col].astype(str).str.upper().str.strip() == tk
-                        if mask.any():
-                            debug_info.append(f"    → Ticker '{tk}' trouvé dans col '{col}' (fallback)")
+                        if df[col].astype(str).str.upper().str.strip().eq(tk).any():
                             col_tk = col
+                            debug_info.append(f"  col_ticker trouvé via fallback: '{col}'")
                             break
 
-                if col_tk and col_px:
-                    mask    = df[col_tk].astype(str).str.upper().str.strip() == tk
-                    subset  = df[mask].dropna(subset=[col_px])
-                    debug_info.append(f"    → Lignes matchées pour {tk}: {len(subset)}")
+                if not col_tk or not col_px:
+                    debug_info.append("  → Colonnes ticker/prix introuvables, table ignorée")
+                    continue
 
-                    if subset.empty:
-                        # Log quelques valeurs pour voir ce qui est disponible
-                        sample = df[col_tk].astype(str).str.upper().str.strip().head(5).tolist()
-                        debug_info.append(f"    → Exemples tickers dispo: {sample}")
-                        continue
-                    try:
-                        px  = _clean_num(subset[col_px].iloc[0])
-                        vr  = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
-                        if px > 0:
-                            return {
-                                "prix": px,
-                                "variation_pct": vr,
-                                "_source_url": url,
-                                "_debug_info": debug_info,
-                            }
-                    except Exception as e:
-                        erreurs.append(f"parse {url} table {i}: {e}")
+                # Filtre sur le ticker exact
+                mask   = df[col_tk].astype(str).str.upper().str.strip() == tk
+                subset = df[mask].dropna(subset=[col_px])
+
+                # Log des tickers disponibles si pas de match
+                if subset.empty:
+                    sample = df[col_tk].astype(str).str.upper().str.strip().head(8).tolist()
+                    debug_info.append(f"  → '{tk}' non trouvé. Exemples dispo: {sample}")
+                    continue
+
+                try:
+                    px  = _clean_num(subset[col_px].iloc[0])
+                    vr  = _clean_num(subset[col_var].iloc[0]) if col_var else 0.0
+                    if px > 0:
+                        debug_info.append(f"  ✅ {tk} trouvé : prix={px}, var={vr}%")
+                        return {
+                            "prix":          px,
+                            "variation_pct": vr,
+                            "_source_url":   url,
+                            "_debug_info":   debug_info,
+                        }
+                except Exception as e:
+                    erreurs.append(f"parse table {i}: {e}")
+                    debug_info.append(f"  ❌ Erreur parse: {e}")
 
         except Exception as e:
             erreurs.append(f"req {url}: {e}")
+            debug_info.append(f"❌ Exception: {e}")
 
     return {"_erreurs_cours": erreurs, "_debug_info": debug_info}
 
@@ -863,27 +889,21 @@ with tab1:
             </div>""", unsafe_allow_html=True)
 
         # Debug erreurs fetch
-    if not marche_data.get("prix"):
-        with st.expander("🔧 Détails fetch automatique (debug)", expanded=True):
-        debug_lines = marche_data.get("_debug_info", [])
-            if debug_lines:
-            st.markdown("**Trace réseau :**")
-                for line in debug_lines:
-                st.code(line)
+    # Dans le formulaire, remplacer le bloc debug expander par :
+    if not marche_data.get("prix") and titre and len(titre) >= 3:
+        with st.expander("🔧 Debug fetch automatique", expanded=True):
+            for line in marche_data.get("_debug_info", []):
+            st.code(line)
             for e in marche_data.get("_erreurs_cours", []):
             st.error(str(e))
-            if marche_data.get("_erreur_tech"):
-            st.error(str(marche_data["_erreur_tech"]))
-            if not debug_lines and not marche_data.get("_erreurs_cours"):
-                
-            st.warning("Aucune info de debug — la requête n'a peut-être pas été exécutée (cache actif). "
-                       "Videz le cache Streamlit avec le menu ⋮ → Clear cache.")
+            if not marche_data.get("_debug_info") and not marche_data.get("_erreurs_cours"):
+            st.warning("⚠️ Aucune trace — cache actif. Faites Clear Cache puis rechargez.")
 
-    if periode_donnees != "Annuel complet (2024 ou 2025)":
+        if periode_donnees != "Annuel complet (2024 ou 2025)":
         annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
         msg_bilan = (f"Crédits et dépôts : référez-vous au bilan {annee_bilan_ref}."
-                     if est_banque
-                     else f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}.")
+                    if est_banque
+                    else f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}.")
         st.markdown(f"""<div class="alert-estimated">
         📅 <b>Publication intermédiaire détectée</b> — {msg_bilan}
         Le résultat saisi sera extrapolé automatiquement.
