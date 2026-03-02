@@ -808,7 +808,7 @@ if "prix" in marche_data:
     </div>
     """
 else:
-    html_prix = ""
+    html_prix = """
             <div class="ticker-price-block">
                 <div style="color:#d29922;font-size:0.85em">
                     ⚠️ Cours non disponible<br>Saisie manuelle requise
