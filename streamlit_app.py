@@ -306,39 +306,39 @@ except ImportError:
 import re as _re
 
 
+# ----------------------------------------------------------
+# Helpers numériques
+# ----------------------------------------------------------
 def _clean_num(v):
     """
-    Nettoie une valeur numérique richbourse.
-    Retourne float ou lève ValueError/TypeError si non convertible.
-    Gère : espaces insécables, virgules décimales, %, +/-.
+    Convertit une valeur HTML en float.
+    Gère espaces insécables, virgules décimales, %, +/-.
+    Lève ValueError si non convertible.
     """
     s = (str(v)
-         .replace("\xa0", "")
-         .replace("\u202f", "")
-         .replace("\u00a0", "")
-         .replace(" ", "")
-         .replace(",", ".")
-         .replace("%", "")
+         .replace("\xa0", "").replace("\u202f", "").replace("\u00a0", "")
+         .replace("\u2009", "").replace(" ", "")
+         .replace(",", ".").replace("%", "")
          .strip())
-    # Rejeter les chaînes non numériques communes
-    if s in ("", "-", "—", "N/D", "N/A", "nd", "na", "nan", "none", "null"):
+    if s in ("", "-", "–", "—", "N/D", "N/A", "nd", "na", "nan",
+             "none", "null", "nc", "n/c", "—"):
         raise ValueError(f"Non-numeric: {v!r}")
     return float(s)
 
 
 def _try_num(v, default=None):
-    """Version silencieuse de _clean_num — retourne default si échec."""
+    """_clean_num silencieux — retourne default si échec."""
     try:
         return _clean_num(v)
     except Exception:
         return default
 
 
+# ----------------------------------------------------------
+# Helpers colonnes pandas
+# ----------------------------------------------------------
 def _flatten_columns(df):
-    """
-    Aplatit les MultiIndex columns de pandas (cas colspan dans les tables HTML).
-    Ex: ('Cours', 'Actuel') → 'cours_actuel'
-    """
+    """Aplatit les MultiIndex columns (cas colspan HTML)."""
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [
             "_".join(
@@ -359,30 +359,26 @@ def _flatten_columns(df):
 
 
 def _normalize_col_name(c):
-    """Normalise un nom de colonne pour la recherche."""
     return (str(c).strip().lower()
             .replace("\xa0", "").replace("\u202f", "")
             .replace("_", " ").replace("-", " "))
 
 
-# Variantes de noms de colonnes — enrichies
 COL_TICKER_VARIANTS = [
     "symbole", "ticker", "code", "valeur", "titre", "action",
-    "actions", "symbol", "libellé", "libelle", "designation"
+    "actions", "symbol", "libellé", "libelle", "designation", "sigle"
 ]
 COL_PRIX_VARIANTS = [
-    "cours actuel", "actuel", "dernier cours", "cours",
-    "clôture", "cloture", "close", "prix", "cotation",
-    "dernier", "last", "normal"
+    "cours", "cotation", "actuel", "clôture", "cloture",
+    "close", "prix", "dernier", "last", "normal", "séance"
 ]
 COL_VAR_VARIANTS = [
     "variation", "var", "évolution", "evolution",
-    "chgt", "change", "diff", "delta", "perf"
+    "chgt", "change", "diff", "delta", "perf", "%"
 ]
 
 
 def _find_col(df_cols, variants):
-    """Trouve la première colonne dont le nom normalisé contient un des variants."""
     norm = [_normalize_col_name(c) for c in df_cols]
     for variant in variants:
         for i, n in enumerate(norm):
@@ -391,125 +387,88 @@ def _find_col(df_cols, variants):
     return None
 
 
-# ==========================================================
-# MÉTHODE 1 — BeautifulSoup : scan ligne par ligne (le plus robuste)
-# ==========================================================
-def _fetch_cours_bs4(html_text: str, ticker: str) -> dict:
+# ----------------------------------------------------------
+# Parser HTML générique (BS4 row-scan + pd.read_html)
+# ----------------------------------------------------------
+def _parse_html_for_ticker(html: str, ticker: str, source_label: str) -> dict:
     """
-    Parse le HTML avec BS4 et cherche le ticker dans toutes les lignes
-    de toutes les tables. Retourne {'prix': float, 'variation_pct': float}
-    ou {} si non trouvé.
+    Cherche `ticker` dans les tables HTML par deux méthodes.
+    Retourne {'prix': float, 'variation_pct': float, '_debug': [...]}
+    ou {'_debug': [...]} si non trouvé.
     """
-    if not HAS_BS4:
-        return {}
     tk = ticker.upper().strip()
-    soup = BeautifulSoup(html_text, "html.parser")
-    debug = []
+    debug = [f"[{source_label}] Parsing HTML ({len(html):,} chars) pour '{tk}'"]
 
-    for table_idx, table in enumerate(soup.find_all("table")):
-        rows = table.find_all("tr")
-        debug.append(f"BS4 Table {table_idx}: {len(rows)} lignes")
-
-        # Déterminer l'index des colonnes depuis le header
-        header_cells = []
-        for tr in rows[:3]:  # chercher header dans les 3 premières lignes
-            ths = tr.find_all(["th", "td"])
-            if len(ths) >= 2:
-                header_cells = [
-                    _normalize_col_name(th.get_text(strip=True)) for th in ths
-                ]
-                break
-
-        debug.append(f"  Headers: {header_cells[:6]}")
-
-        # Index approximatifs
-        idx_tk  = next((i for i, h in enumerate(header_cells) if any(v in h for v in COL_TICKER_VARIANTS)), 0)
-        idx_px  = next((i for i, h in enumerate(header_cells) if any(v in h for v in COL_PRIX_VARIANTS)), 1)
-        idx_var = next((i for i, h in enumerate(header_cells) if any(v in h for v in COL_VAR_VARIANTS)), None)
-
-        for tr in rows:
-            cells = tr.find_all(["td", "th"])
-            if not cells:
+    # ── Méthode A : BeautifulSoup row-scanner ─────────────
+    if HAS_BS4:
+        soup = BeautifulSoup(html, "html.parser")
+        for t_idx, table in enumerate(soup.find_all("table")):
+            rows = table.find_all("tr")
+            if len(rows) < 2:
                 continue
-            texts = [c.get_text(strip=True) for c in cells]
 
-            # Chercher le ticker dans N'IMPORTE QUELLE cellule de la ligne
-            ticker_found = False
-            for cell_text in texts:
-                if cell_text.upper().strip() == tk:
-                    ticker_found = True
+            # Header
+            hcells = []
+            for tr in rows[:3]:
+                ths = tr.find_all(["th", "td"])
+                if len(ths) >= 2:
+                    hcells = [_normalize_col_name(th.get_text(strip=True)) for th in ths]
                     break
 
-            if not ticker_found:
-                continue
+            idx_tk  = next((i for i, h in enumerate(hcells) if any(v in h for v in COL_TICKER_VARIANTS)), 0)
+            idx_px  = next((i for i, h in enumerate(hcells) if any(v in h for v in COL_PRIX_VARIANTS)), 1)
+            idx_var = next((i for i, h in enumerate(hcells) if any(v in h for v in COL_VAR_VARIANTS)), None)
+            debug.append(f"  BS4 table {t_idx}: headers={hcells[:5]} idx_tk={idx_tk} idx_px={idx_px}")
 
-            debug.append(f"  ✅ Ticker '{tk}' trouvé — cellules: {texts[:6]}")
+            for tr in rows:
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                texts = [c.get_text(strip=True) for c in cells]
 
-            # Extraire le prix depuis la colonne détectée
-            px = None
-            if idx_px < len(texts):
-                px = _try_num(texts[idx_px])
+                if not any(t.upper().strip() == tk for t in texts):
+                    continue
 
-            # Si l'index détecté ne marche pas, scanner toutes les cellules
-            # pour trouver une valeur numérique plausible (>= 50 FCFA)
-            if px is None or px < 10:
-                for cell_text in texts:
-                    candidate = _try_num(cell_text)
-                    if candidate is not None and candidate >= 50:
-                        px = candidate
-                        debug.append(f"  Prix trouvé par scan: {px}")
-                        break
+                debug.append(f"  ✅ BS4 row trouvé: {texts[:6]}")
+                px = _try_num(texts[idx_px]) if idx_px < len(texts) else None
 
-            # Extraire la variation
-            vr = 0.0
-            if idx_var is not None and idx_var < len(texts):
-                vr = _try_num(texts[idx_var], 0.0)
+                # Scan de secours si la colonne détectée ne donne pas de prix valide
+                if not px or px < 10:
+                    nums = [(i, _try_num(t)) for i, t in enumerate(texts) if _try_num(t) is not None]
+                    nums_valid = [(i, v) for i, v in nums if v >= 50]
+                    if nums_valid:
+                        px = nums_valid[0][1]
+                        debug.append(f"  prix par scan: {px} (col {nums_valid[0][0]})")
 
-            if px and px > 0:
-                debug.append(f"  → Prix={px}, Var={vr}%")
-                return {"prix": px, "variation_pct": vr, "_debug_bs4": debug}
+                vr = 0.0
+                if idx_var is not None and idx_var < len(texts):
+                    vr = _try_num(texts[idx_var], 0.0)
 
-    return {"_debug_bs4": debug}
+                if px and px > 0:
+                    debug.append(f"  → prix={px} var={vr}%")
+                    return {"prix": px, "variation_pct": vr, "_debug": debug}
 
-
-# ==========================================================
-# MÉTHODE 2 — pd.read_html avec gestion MultiIndex
-# ==========================================================
-def _fetch_cours_pandas(html_text: str, ticker: str) -> dict:
-    """
-    Parse avec pd.read_html (sans flavor pour maximiser la compatibilité).
-    Gère les MultiIndex columns.
-    """
-    tk = ticker.upper().strip()
-    debug = []
-
-    # Essayer sans flavor d'abord, puis avec lxml, puis html5lib
+    # ── Méthode B : pd.read_html ──────────────────────────
     for flavor in [None, "lxml", "html5lib"]:
         try:
             kw = {} if flavor is None else {"flavor": flavor}
-            tables = pd.read_html(StringIO(html_text), **kw)
-            debug.append(f"pd.read_html(flavor={flavor}): {len(tables)} table(s)")
+            tables = pd.read_html(StringIO(html), **kw)
         except Exception as e:
-            debug.append(f"pd.read_html(flavor={flavor}) FAIL: {e}")
+            debug.append(f"  pd.read_html(flavor={flavor}) FAIL: {e}")
             continue
 
+        debug.append(f"  pd.read_html(flavor={flavor}): {len(tables)} table(s)")
         for i, df in enumerate(tables):
-            # Aplatir MultiIndex
             df = _flatten_columns(df)
-            debug.append(f"  Table {i} colonnes: {list(df.columns)[:8]}")
-
             col_tk  = _find_col(list(df.columns), COL_TICKER_VARIANTS)
             col_px  = _find_col(list(df.columns), COL_PRIX_VARIANTS)
             col_var = _find_col(list(df.columns), COL_VAR_VARIANTS)
-            debug.append(f"  → col_ticker={col_tk} | col_prix={col_px} | col_var={col_var}")
 
-            # Fallback : chercher le ticker dans toutes les colonnes
             if col_tk is None:
                 for col in df.columns:
                     try:
                         if df[col].astype(str).str.upper().str.strip().eq(tk).any():
                             col_tk = col
-                            debug.append(f"  col_ticker trouvé via scan: '{col}'")
                             break
                     except Exception:
                         pass
@@ -517,105 +476,186 @@ def _fetch_cours_pandas(html_text: str, ticker: str) -> dict:
             if col_tk is None or col_px is None:
                 continue
 
-            # Filtrer sur le ticker
             try:
-                mask = df[col_tk].astype(str).str.upper().str.strip() == tk
+                mask   = df[col_tk].astype(str).str.upper().str.strip() == tk
                 subset = df[mask]
-            except Exception as e:
-                debug.append(f"  mask FAIL: {e}")
+            except Exception:
                 continue
 
             if subset.empty:
-                sample = df[col_tk].astype(str).str.upper().str.strip().head(6).tolist()
-                debug.append(f"  '{tk}' non trouvé. Exemples: {sample}")
+                debug.append(f"  '{tk}' absent. Exemples: {df[col_tk].astype(str).head(4).tolist()}")
                 continue
 
-            # Parser prix et variation avec _try_num (ne plante jamais)
-            px = None
-            for val in subset[col_px].values:
-                px = _try_num(val)
-                if px and px > 0:
-                    break
-
+            px = next((v for v in (
+                _try_num(x) for x in subset[col_px].values) if v and v > 0), None)
             vr = 0.0
             if col_var and col_var in subset.columns:
-                for val in subset[col_var].values:
-                    candidate = _try_num(val)
-                    if candidate is not None:
-                        vr = candidate
-                        break
+                vr = next((v for v in (
+                    _try_num(x) for x in subset[col_var].values) if v is not None), 0.0)
 
             if px and px > 0:
-                debug.append(f"  ✅ {tk} → prix={px}, var={vr}%")
-                return {"prix": px, "variation_pct": vr, "_debug_pandas": debug}
+                debug.append(f"  ✅ pandas {tk} → prix={px} var={vr}%")
+                return {"prix": px, "variation_pct": vr, "_debug": debug}
 
-        # Si on a trouvé des tables avec la bonne librairie, ne pas ré-essayer
-        if tables:
-            break
+        break  # si pd.read_html a fonctionné (même sans résultat), ne pas re-tenter
 
-    return {"_debug_pandas": debug}
+    debug.append(f"  ❌ '{tk}' non trouvé dans [{source_label}]")
+    return {"_debug": debug}
 
 
 # ==========================================================
-# FETCH COURS — FONCTION PRINCIPALE (cache 30 min)
+# SOURCE 1 — brvm.org (site officiel, pas de bot-protection)
 # ==========================================================
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_cours_richbourse(ticker: str) -> dict:
+BRVM_ORG_BASE = "https://www.brvm.org"
+
+def _fetch_brvm_org(ticker: str, debug: list) -> dict:
     """
-    Récupère le cours actuel depuis richbourse.com.
-    Stratégie : BS4 row-scanner (robuste) → pd.read_html (fallback).
+    Fetch depuis brvm.org/fr/cours-titres/0 — page unique listant tous les titres.
+    Structure de la table : Symbole | Désignation | Cours Réf (J-1) | Cours | Variation %
     """
     tk = ticker.upper().strip()
-    all_debug = []
-    all_errors = []
+    urls = [
+        f"{BRVM_ORG_BASE}/fr/cours-titres/0",
+        f"{BRVM_ORG_BASE}/fr/cours-titres/0/symbole/asc/100/1",
+        f"{BRVM_ORG_BASE}/fr/cours-titres/0/symbole/asc/60/1",
+    ]
+    headers = {**HEADERS_HTTP, "Referer": BRVM_ORG_BASE}
+
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            debug.append(f"brvm.org HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            if r.status_code != 200 or len(r.text) < 2000:
+                continue
+            if tk not in r.text:
+                debug.append(f"  '{tk}' absent du HTML brvm.org")
+                continue
+            res = _parse_html_for_ticker(r.text, tk, "brvm.org")
+            debug.extend(res.pop("_debug", []))
+            if "prix" in res:
+                res["_source"] = "brvm.org"
+                return res
+        except Exception as e:
+            debug.append(f"  brvm.org exception: {e}")
+
+    return {}
+
+
+# ==========================================================
+# SOURCE 2 — sika-finance.com
+# ==========================================================
+SIKA_BASE = "https://sika-finance.com"
+
+def _fetch_sika_finance(ticker: str, debug: list) -> dict:
+    tk = ticker.upper().strip()
+    urls = [
+        f"{SIKA_BASE}/bourse-en-direct/",
+        f"{SIKA_BASE}/valeur/BRVM/{tk}",
+    ]
+    headers = {**HEADERS_HTTP, "Referer": SIKA_BASE}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            debug.append(f"sika-finance HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            if r.status_code != 200 or len(r.text) < 2000:
+                continue
+            if tk not in r.text:
+                debug.append(f"  '{tk}' absent du HTML sika-finance")
+                continue
+            res = _parse_html_for_ticker(r.text, tk, "sika-finance")
+            debug.extend(res.pop("_debug", []))
+            if "prix" in res:
+                res["_source"] = "sika-finance.com"
+                return res
+        except Exception as e:
+            debug.append(f"  sika-finance exception: {e}")
+    return {}
+
+
+# ==========================================================
+# SOURCE 3 — richbourse.com via Session (bypass partiel bot)
+# ==========================================================
+def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
+    """
+    Utilise une Session requests pour récupérer les cookies
+    en visitant d'abord la homepage, puis les pages de cotation.
+    Contourne partiellement le blocage Cloudflare.
+    """
+    tk = ticker.upper().strip()
+    session = requests.Session()
+    session.headers.update(HEADERS_HTTP)
+
+    # Pré-fetch homepage pour récupérer les cookies
+    try:
+        r0 = session.get(RICHBOURSE_BASE + "/", timeout=15)
+        debug.append(f"richbourse.com HOME: HTTP {r0.status_code} — {len(r0.text):,} chars")
+        # Attendre un tout petit peu (Cloudflare "Waiting Room" parfois)
+    except Exception as e:
+        debug.append(f"richbourse.com HOME fail: {e}")
+        return {}
 
     urls = [
         f"{RICHBOURSE_BASE}/common/variation/index",
         f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
-        f"{RICHBOURSE_BASE}/",
     ]
-
     for url in urls:
         try:
-            resp = requests.get(url, headers=HEADERS_HTTP, timeout=20)
-            status_line = f"HTTP {resp.status_code} — {len(resp.text):,} chars — {url}"
-            all_debug.append(status_line)
-
-            if resp.status_code != 200:
-                all_errors.append(f"HTTP {resp.status_code} sur {url}")
+            r = session.get(url, timeout=20)
+            debug.append(f"richbourse.com DATA: HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            if r.status_code != 200 or len(r.text) < 2000:
                 continue
-
-            html = resp.text
-
-            # ── Méthode 1 : BS4 row scanner ──────────────────
-            if HAS_BS4:
-                res_bs4 = _fetch_cours_bs4(html, tk)
-                all_debug.extend(res_bs4.pop("_debug_bs4", []))
-                if "prix" in res_bs4:
-                    return {**res_bs4, "_source_url": url, "_debug_info": all_debug, "_methode": "BS4"}
-
-            # ── Méthode 2 : pd.read_html ──────────────────────
-            res_pd = _fetch_cours_pandas(html, tk)
-            all_debug.extend(res_pd.pop("_debug_pandas", []))
-            if "prix" in res_pd:
-                return {**res_pd, "_source_url": url, "_debug_info": all_debug, "_methode": "pandas"}
-
-            all_debug.append(f"'{tk}' non trouvé sur {url}")
-
-        except requests.exceptions.Timeout:
-            msg = f"Timeout ({url})"
-            all_errors.append(msg)
-            all_debug.append(f"❌ {msg}")
-        except requests.exceptions.ConnectionError:
-            msg = f"Connexion impossible ({url})"
-            all_errors.append(msg)
-            all_debug.append(f"❌ {msg}")
+            if tk not in r.text:
+                debug.append(f"  '{tk}' absent du HTML richbourse")
+                continue
+            res = _parse_html_for_ticker(r.text, tk, "richbourse")
+            debug.extend(res.pop("_debug", []))
+            if "prix" in res:
+                res["_source"] = "richbourse.com"
+                return res
         except Exception as e:
-            msg = f"Exception {type(e).__name__}: {e} ({url})"
-            all_errors.append(msg)
-            all_debug.append(f"❌ {msg}")
+            debug.append(f"  richbourse.com DATA fail: {e}")
 
-    return {"_erreurs_cours": all_errors, "_debug_info": all_debug}
+    return {}
+
+
+# ==========================================================
+# FETCH COURS — ORCHESTRATEUR MULTI-SOURCES (cache 30 min)
+# ==========================================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_cours_richbourse(ticker: str) -> dict:
+    """
+    Récupère le cours actuel avec cascade de sources :
+      1. brvm.org       (site officiel BRVM, pas de bot-protection)
+      2. sika-finance    (agrégateur BRVM)
+      3. richbourse.com  (via Session avec pré-fetch cookies)
+    """
+    tk = ticker.upper().strip()
+    all_debug = [f"=== fetch_cours({tk}) ==="]
+    all_errors = []
+
+    # ── Source 1 : brvm.org ───────────────────────────────
+    all_debug.append("--- Tentative 1 : brvm.org ---")
+    res = _fetch_brvm_org(tk, all_debug)
+    if "prix" in res:
+        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','brvm.org')}"}
+
+    # ── Source 2 : sika-finance ───────────────────────────
+    all_debug.append("--- Tentative 2 : sika-finance.com ---")
+    res = _fetch_sika_finance(tk, all_debug)
+    if "prix" in res:
+        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','sika-finance')}"}
+
+    # ── Source 3 : richbourse via Session ─────────────────
+    all_debug.append("--- Tentative 3 : richbourse.com (Session) ---")
+    res = _fetch_richbourse_session(tk, all_debug)
+    if "prix" in res:
+        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','richbourse')}"}
+
+    all_debug.append("❌ Toutes les sources ont échoué — saisie manuelle requise")
+    return {
+        "_erreurs_cours": all_errors,
+        "_debug_info":    all_debug,
+    }
 
 
 # ==========================================================
@@ -666,37 +706,51 @@ def fetch_tech_richbourse(ticker: str) -> dict:
 # ==========================================================
 # FETCH HISTORIQUE + INDICATEURS NUMÉRIQUES
 # ==========================================================
+def _parse_historique_html(html: str, nb_jours: int) -> pd.DataFrame:
+    """Parse un tableau historique depuis n'importe quelle source."""
+    for flavor in [None, "lxml", "html5lib"]:
+        try:
+            kw = {} if flavor is None else {"flavor": flavor}
+            tables = pd.read_html(StringIO(html), **kw)
+        except Exception:
+            continue
+        for df in tables:
+            df = _flatten_columns(df)
+            col_date  = _find_col(list(df.columns), ["date", "séance", "jour", "session"])
+            col_close = _find_col(list(df.columns), ["cours", "clôture", "close", "normal", "actuel", "cotation"])
+            if col_date and col_close:
+                df2 = df[[col_date, col_close]].copy()
+                df2.columns = ["date", "close"]
+                df2["date"]  = pd.to_datetime(df2["date"], errors="coerce", dayfirst=True)
+                df2["close"] = df2["close"].apply(lambda x: _try_num(x))
+                df2 = df2.dropna().sort_values("date").tail(nb_jours).reset_index(drop=True)
+                if len(df2) >= 10:
+                    return df2
+        if tables:
+            break
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique_richbourse(ticker: str, nb_jours: int = 120) -> pd.DataFrame:
-    url = f"{RICHBOURSE_BASE}/common/variation/historique/{ticker.upper()}"
-    try:
-        resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
-        resp.raise_for_status()
-        html = resp.text
-
-        # Essayer pd.read_html sans flavor
-        for flavor in [None, "lxml", "html5lib"]:
-            try:
-                kw = {} if flavor is None else {"flavor": flavor}
-                tables = pd.read_html(StringIO(html), **kw)
-            except Exception:
+    tk = ticker.upper()
+    urls = [
+        # brvm.org historique
+        f"{BRVM_ORG_BASE}/fr/cours-historiques/0/symbole/{tk}",
+        f"{BRVM_ORG_BASE}/fr/cours-historiques/0/symbole/{tk}/asc/120/1",
+        # richbourse historique (peut fonctionner même si l'index est bloqué)
+        f"{RICHBOURSE_BASE}/common/variation/historique/{tk}",
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
+            if resp.status_code != 200 or len(resp.text) < 1000:
                 continue
-            for df in tables:
-                df = _flatten_columns(df)
-                col_date  = _find_col(list(df.columns), ["date", "séance", "jour", "session"])
-                col_close = _find_col(list(df.columns), ["cours", "clôture", "close", "normal", "actuel"])
-                if col_date and col_close:
-                    df2 = df[[col_date, col_close]].copy()
-                    df2.columns = ["date", "close"]
-                    df2["date"]  = pd.to_datetime(df2["date"], errors="coerce", dayfirst=True)
-                    df2["close"] = df2["close"].apply(lambda x: _try_num(x))
-                    df2 = df2.dropna().sort_values("date").tail(nb_jours).reset_index(drop=True)
-                    if len(df2) >= 10:
-                        return df2
-            if tables:
-                break
-    except Exception:
-        pass
+            df = _parse_historique_html(resp.text, nb_jours)
+            if not df.empty:
+                return df
+        except Exception:
+            continue
     return pd.DataFrame()
 
 
@@ -1111,11 +1165,16 @@ with tab1:
                     st.error(str(e))
 
                 st.markdown("""---
-**Solutions possibles :**
-1. Cliquer **🗑️ Vider le cache cours** dans la sidebar, puis réessayer
-2. Vérifier que `richbourse.com` est accessible depuis votre réseau
-3. Si `beautifulsoup4` n'est pas installé : `pip install beautifulsoup4 lxml html5lib`
-4. Saisir le cours manuellement dans le formulaire ci-dessous
+**Sources tentées dans l'ordre :**
+1. `brvm.org/fr/cours-titres/0` — site officiel BRVM (prioritaire)
+2. `sika-finance.com/bourse-en-direct/` — agrégateur BRVM
+3. `richbourse.com` via Session avec pré-fetch cookies
+
+**Solutions si tout échoue :**
+- Vérifier la connexion internet depuis le serveur Streamlit
+- Installer les parseurs : `pip install beautifulsoup4 lxml html5lib`
+- Saisir le cours manuellement dans le formulaire
+- Cliquer **🗑️ Vider le cache cours** puis réessayer
 """)
 
     # ── Alerte période intermédiaire ──────────────────────
@@ -1671,38 +1730,32 @@ with tab3:
 with tab4:
     st.subheader("📖 Méthodologie")
     st.markdown("""
-    ### Architecture de données
+    ### Architecture fetch — v3.3 Multi-sources
 
     ```
     ┌─────────────────────────────────────────────────────────────┐
-    │  DONNÉES DE MARCHÉ (automatiques) — Source : richbourse.com │
-    │  1. Cours actuel + variation %  ← /variation/index          │
-    │     Méthode 1 : BS4 row-scanner (robuste, Multi-Index safe) │
-    │     Méthode 2 : pd.read_html sans flavor (fallback)         │
-    │  2. RSI/BB/EMA/Tendance         ← /prevision-boursiere/...  │
-    │  3. BB sup/inf numériques       ← /historique/TICKER        │
-    │  Cache : 10 min / 30 min / 1h · Bouton vider dans sidebar   │
+    │  SOURCE 1 — brvm.org  (officiel BRVM, pas de bot-blocker)   │
+    │  GET /fr/cours-titres/0  → table HTML complète              │
+    │  GET /fr/cours-historiques/0/symbole/TICKER                 │
+    ├─────────────────────────────────────────────────────────────┤
+    │  SOURCE 2 — sika-finance.com  (agrégateur BRVM)             │
+    │  GET /bourse-en-direct/ ou /valeur/BRVM/TICKER              │
+    ├─────────────────────────────────────────────────────────────┤
+    │  SOURCE 3 — richbourse.com  (Session + pre-fetch cookies)   │
+    │  Contourne partiellement le blocage Cloudflare 202          │
     └───────────────────┬─────────────────────────────────────────┘
                         │
     ┌───────────────────▼─────────────────────────────────────────┐
-    │  FONDAMENTAUX (persistants) — SQLite local                  │
-    │  Pré-rempli automatiquement · Export/Import JSON            │
-    └───────────────────┬─────────────────────────────────────────┘
-                        │
-    ┌───────────────────▼─────────────────────────────────────────┐
-    │  MOTEUR : Graham · DCF · PER sectoriel · RSI/BB · Momentum  │
+    │  PARSER _parse_html_for_ticker()                            │
+    │  BS4 row-scanner → pd.read_html (lxml / html5lib)           │
+    │  MultiIndex-safe · _try_num() anti-crash N/D, —, vide       │
     └─────────────────────────────────────────────────────────────┘
     ```
 
-    ### Correctifs v3.2 — Fetch cours
-    | Bug | Symptôme | Fix |
-    |---|---|---|
-    | `_clean_num` crashait sur N/D, —, '' | Aucune ligne parsée → cours absent | `_try_num()` silencieux + rejet explicite des valeurs vides |
-    | MultiIndex columns (`colspan` HTML) | Colonnes tuple non détectées | `_flatten_columns()` aplatit tous les MultiIndex |
-    | `flavor="lxml"` sans fallback | Échec silencieux si lxml absent | Essai séquentiel `None → lxml → html5lib` |
-    | BS4 absente → pd.read_html only | Moins robuste | BS4 row-scanner en priorité, pandas en fallback |
-    | Cache bloquait les re-tests | Erreur cachée 30 min | Bouton **Vider le cache cours** dans la sidebar |
-    | Headers HTTP minimalistes | Blocage anti-bot possible | Headers complets (Accept, Accept-Encoding…) |
+    ### Pourquoi richbourse.com retournait HTTP 202 / 193 chars
+    HTTP 202 avec ~200 caractères = **Cloudflare bot challenge** (JS required).
+    `requests` ne peut pas exécuter le JavaScript de vérification.
+    Solution : brvm.org et sika-finance.com n'ont pas ce blocage.
 
     ### Installation
     ```bash
