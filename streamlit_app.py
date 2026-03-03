@@ -9,6 +9,7 @@ import numpy as np
 import sqlite3
 import json
 import requests
+import re as _re
 from io import BytesIO, StringIO
 from datetime import datetime
 import warnings
@@ -205,7 +206,7 @@ _NULS = {"", "-", "–", "—", "N/D", "N/A", "nd", "na", "nc", "n/c", "null", "
 
 def to_float(v, default=None):
     s = (str(v)
-         .replace("\xa0","").replace("\u202f","").replace("\u2009","")
+         .replace(" ","").replace(" ","").replace("\u2009","")
          .replace(" ","").replace(",",".").replace("%","").strip())
     if s.lower() in _NULS:
         return default
@@ -216,7 +217,7 @@ def to_float(v, default=None):
 
 def _normalize(s):
     import unicodedata as _ud
-    s = str(s).strip().lower().replace("\xa0","").replace("\u202f","")
+    s = str(s).strip().lower().replace(" ","").replace(" ","")
     return "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn")
 
 # ─────────────────────────────────────────────
@@ -286,176 +287,196 @@ def _parse_table(html, ticker):
     return None, None
 
 
+# ─────────────────────────────────────────────
+# CONSTANTE BASE URL
+RICHBOURSE_BASE = "https://www.richbourse.com"
+
+# ─────────────────────────────────────────────
+# SCRAPING — COURS + INDICATEURS TECHNIQUES
+# ─────────────────────────────────────────────
+
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_cours(ticker):
+def fetch_cours(ticker: str) -> dict:
     """
-    Cascade : brvm.org → sikafinance.com
-    Retourne dict avec 'prix', 'variation_pct', 'source' ou {} si échec.
+    Cascade cours : richbourse → brvm.org → sikafinance
+    Colonnes richbourse confirmées (2025-03) : Symbole | Cours actuel | Variation
     """
     tk = ticker.upper().strip()
-    sources = [
-        ("brvm.org",       f"https://www.brvm.org/fr/cours-actions/0"),
-        ("brvm.org (p2)",  f"https://www.brvm.org/fr/cours-actions/0/symbole/asc/100/1"),
-        ("sikafinance",    f"https://www.sikafinance.com/marches/aaz"),
-        ("sikafinance(v)", f"https://www.sikafinance.com/valeur/BRVM/{tk}"),
-    ]
-    for name, url in sources:
+
+    COL_TICKER_VARIANTS = ["symbole", "ticker", "code", "valeur", "titre", "action"]
+    COL_PRIX_VARIANTS   = ["cours actuel", "actuel", "dernier cours", "cours",
+                           "clôture", "cloture", "close", "prix"]
+    COL_VAR_VARIANTS    = ["variation", "var", "évolution", "evolution"]
+
+    # ── Source 1 : richbourse ──────────────────────────────────────────────────
+    for url in [
+        f"{RICHBOURSE_BASE}/common/variation/index",
+        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
+    ]:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            if resp.status_code != 200 or len(resp.text) < 500:
+                continue
+            tables = pd.read_html(StringIO(resp.text))
+            for df in tables:
+                df.columns = [
+                    str(c).strip().lower()
+                    .replace(" ", "").replace(" ", "")
+                    for c in df.columns
+                ]
+                col_tk  = next((c for c in df.columns if any(k in c for k in COL_TICKER_VARIANTS)), None)
+                col_px  = next((c for c in df.columns if any(k in c for k in COL_PRIX_VARIANTS)), None)
+                col_var = next((c for c in df.columns if any(k in c for k in COL_VAR_VARIANTS)), None)
+                if not col_tk:
+                    for col in df.columns:
+                        if df[col].astype(str).str.upper().str.strip().eq(tk).any():
+                            col_tk = col; break
+                if not col_tk or not col_px:
+                    continue
+                mask   = df[col_tk].astype(str).str.upper().str.strip() == tk
+                subset = df[mask].dropna(subset=[col_px])
+                if subset.empty:
+                    continue
+                try:
+                    px = to_float(subset[col_px].iloc[0])
+                    vr = to_float(subset[col_var].iloc[0], 0.0) if col_var else 0.0
+                    if px and px > 0:
+                        return {"prix": px, "variation_pct": vr, "source": "richbourse"}
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # ── Source 2 : brvm.org ────────────────────────────────────────────────────
+    for url in [
+        "https://www.brvm.org/fr/cours-actions/0",
+        "https://www.brvm.org/fr/cours-actions/0/symbole/asc/100/1",
+    ]:
         try:
             r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-            if r.status_code != 200 or len(r.text) < 500:
-                continue
-            if tk not in r.text.upper():
+            if r.status_code != 200 or tk not in r.text.upper():
                 continue
             px, var = _parse_table(r.text, tk)
             if px:
-                return {"prix": px, "variation_pct": var or 0.0, "source": name}
+                return {"prix": px, "variation_pct": var or 0.0, "source": "brvm.org"}
         except Exception:
             continue
+
+    # ── Source 3 : sikafinance ─────────────────────────────────────────────────
+    for url in [
+        "https://www.sikafinance.com/marches/aaz",
+        f"https://www.sikafinance.com/valeur/BRVM/{tk}",
+    ]:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            if r.status_code != 200 or tk not in r.text.upper():
+                continue
+            px, var = _parse_table(r.text, tk)
+            if px:
+                return {"prix": px, "variation_pct": var or 0.0, "source": "sikafinance"}
+        except Exception:
+            continue
+
     return {}
 
 
-import re
-_re = re  # alias de compatibilite
-
-# ─────────────────────────────────────────────
-# INDICATEURS TECHNIQUES — 3 sources en cascade
-#
-# 1. richbourse.com/common/prevision-boursiere/synthese/TICKER
-#    RSI exact + positions qualitatives BB/EMA + tendance court terme
-#    (URL non protegee par Cloudflare, contrairement a la page cours)
-#
-# 2. sikafinance.com/valeur/BRVM/TICKER
-#    RSI, EMA20, BB sup/inf en tableau HTML
-#
-# 3. Calcul local sur historique brvm.org (toujours tente en base)
-#    Valeurs numeriques exactes BB/EMA/RSI
-#
-# Fusion : BB/EMA numeriques = calcul local  |  RSI = richbourse si dispo
-# ─────────────────────────────────────────────
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_tech_synthese(ticker):
-    """richbourse.com synthese : RSI exact, positions BB/EMA, tendance."""
-    tk  = ticker.upper().strip()
-    url = f"https://www.richbourse.com/common/prevision-boursiere/synthese/{tk}"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=12, verify=False)
-        if r.status_code != 200 or len(r.text) < 200:
-            return {}
-        text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True) if HAS_BS4 else r.text
-        tl   = text.lower()
-        if "rsi" not in tl and "bollinger" not in tl:
-            return {}
-        res = {"_source_tech": "richbourse"}
-        # RSI — format observe : 'RSI 14 jours est de 54,32 %'
-        m = re.search(r"RSI\s*(?:14\s*jours\s*)?(?:est\s*de\s*)?(\d[\d,\.]+)\s*%", text, re.IGNORECASE)
-        if m:
-            res["rsi"] = float(m.group(1).replace(",", "."))
-        # Bollinger position
-        if "au-dessus de la bande sup" in tl:
-            res["bb_position"] = "above_sup"
-        elif "en-dessous de la bande inf" in tl:
-            res["bb_position"] = "below_inf"
-        else:
-            res["bb_position"] = "inside"
-        # EMA20 position
-        if "au-dessus de" in tl and "moyenne mobile" in tl:
-            res["ema20_position"] = "above"
-        elif "en-dessous de" in tl and "moyenne mobile" in tl:
-            res["ema20_position"] = "below"
-        # Tendance + confiance
-        m2 = re.search(r"tendance\s*[\u00e0a]\s*court\s*terme\s*[:\-]\s*(\w+)", text, re.IGNORECASE)
-        m3 = re.search(r"indice de confiance\s*(?:de\s*)?(\d[\d,\.]+)\s*%", text, re.IGNORECASE)
-        if m2: res["tendance"]  = m2.group(1).capitalize()
-        if m3: res["confiance"] = float(m3.group(1).replace(",", "."))
-        return res
-    except Exception:
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_tech_synthese(ticker: str) -> dict:
+    """
+    richbourse.com/common/prevision-boursiere/synthese/TICKER
+    Patterns calés sur le vrai texte richbourse (confirmés).
+    """
+    if not HAS_BS4:
         return {}
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_tech_sika(ticker):
-    """sikafinance.com fiche ticker : RSI, EMA20, BB sup/inf."""
     tk  = ticker.upper().strip()
-    url = f"https://www.sikafinance.com/valeur/BRVM/{tk}"
+    url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{tk}"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=12, verify=False)
-        if r.status_code != 200 or len(r.text) < 500:
+        resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        if resp.status_code != 200:
             return {}
-        text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True) if HAS_BS4 else r.text
-        res  = {"_source_tech": "sikafinance"}
-        m = re.search(r"RSI\s*(?:14)?\s*[:\-]?\s*(\d[\d,\.]+)", text, re.IGNORECASE)
-        if m:
-            v = to_float(m.group(1))
-            if v and 0 < v < 100:
-                res["rsi"] = v
-        m = re.search(r"(?:MM|EMA|Moy\.?\s*Mob\.?)\s*20\s*[:\-]?\s*([\d\s,\.]+)", text, re.IGNORECASE)
-        if m:
-            v = to_float(m.group(1))
-            if v and v > 10:
-                res["ema20"] = v
-        m = re.search(r"Bollinger[^\d]*(\d[\d\s,\.]+)[^\d]*(\d[\d\s,\.]+)", text, re.IGNORECASE)
-        if m:
-            v1, v2 = to_float(m.group(1)), to_float(m.group(2))
-            if v1 and v2 and v1 > 10 and v2 > 10:
-                res["bb_inf"] = min(v1, v2)
-                res["bb_sup"] = max(v1, v2)
-        return res if len(res) > 1 else {}
+        soup  = BeautifulSoup(resp.text, "html.parser")
+        texte = soup.get_text(" ", strip=True)
+        if "rsi" not in texte.lower() and "bollinger" not in texte.lower():
+            return {}
+        result = {"_source_tech": "richbourse"}
+        # RSI — format exact : "RSI 14 jours est de 54,32 %"
+        m_rsi = _re.search(r"RSI\s*14\s*jours\s*est\s*de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
+        if m_rsi:
+            result["rsi"] = float(m_rsi.group(1).replace(",", "."))
+        tl = texte.lower()
+        # Bollinger — phrases exactes richbourse
+        if "au-dessus de la bande supérieure" in tl or "bande supérieure de bollinger" in tl:
+            result["bb_position"] = "above_sup"
+        elif "en-dessous de la bande inférieure" in tl or "bande inférieure de bollinger" in tl:
+            result["bb_position"] = "below_inf"
+        else:
+            result["bb_position"] = "inside"
+        # EMA20 — phrase exacte richbourse
+        if "au-dessus de leur moyenne mobile à 20" in tl:
+            result["ema20_position"] = "above"
+        elif "en-dessous de leur moyenne mobile à 20" in tl:
+            result["ema20_position"] = "below"
+        else:
+            result["ema20_position"] = "unknown"
+        # Tendance + confiance
+        m_tend = _re.search(r"Tendance\s*[àa]\s*court\s*terme\s*:\s*(\w+)", texte, _re.IGNORECASE)
+        m_conf = _re.search(r"indice de confiance de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
+        if m_tend: result["tendance"]  = m_tend.group(1).capitalize()
+        if m_conf: result["confiance"] = float(m_conf.group(1).replace(",", "."))
+        return result
     except Exception:
         return {}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_historique(ticker, nb=120):
-    """Historique brvm.org pour calcul local RSI/BB/EMA."""
-    tk = ticker.upper()
-    for url in [
-        f"https://www.brvm.org/fr/cours-historiques/0/symbole/{tk}",
-        f"https://www.brvm.org/fr/cours-historiques/0/symbole/{tk}/asc/{nb}/1",
-        f"https://www.richbourse.com/common/variation/historique/{tk}",
-    ]:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-            if r.status_code != 200 or len(r.text) < 500:
-                continue
-            for df in pd.read_html(StringIO(r.text)):
-                df.columns = [_normalize(c) for c in df.columns]
-                col_d = next((c for c in df.columns if any(k in c for k in ["date","séance","seance","session","jour"])), None)
-                col_c = next((c for c in df.columns if any(k in c for k in ["cours","close","clôture","cloture","cotation","normal"])), None)
-                if not col_d or not col_c:
-                    continue
+def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
+    """
+    richbourse.com/common/variation/historique/TICKER
+    Endpoint dédié par ticker — colonnes avec accents telles quelles.
+    """
+    tk  = ticker.upper()
+    url = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+        resp.raise_for_status()
+        for df in pd.read_html(StringIO(resp.text)):
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            # Accents conservés tels quels après .lower()
+            col_d = next((c for c in df.columns if any(k in c for k in
+                          ["date", "séance", "jour"])), None)
+            col_c = next((c for c in df.columns if any(k in c for k in
+                          ["cours", "clôture", "close", "normal"])), None)
+            if col_d and col_c:
                 df2 = df[[col_d, col_c]].copy()
-                df2.columns = ["date","close"]
+                df2.columns = ["date", "close"]
                 df2["date"]  = pd.to_datetime(df2["date"], errors="coerce", dayfirst=True)
-                df2["close"] = df2["close"].apply(to_float)
+                df2["close"] = pd.to_numeric(
+                    df2["close"].astype(str)
+                    .str.replace(" ", "", regex=False)
+                    .str.replace(" ", "", regex=False)
+                    .str.replace(" ", "", regex=False)
+                    .str.replace(",", ".", regex=False),
+                    errors="coerce"
+                )
                 df2 = df2.dropna().sort_values("date").tail(nb).reset_index(drop=True)
-                if len(df2) >= 14:
+                if len(df2) >= 10:
                     return df2
-        except Exception:
-            continue
+    except Exception:
+        pass
     return pd.DataFrame()
 
 
-
-def calc_indicateurs(df):
-    """Calcule RSI(14), BB(20,2), EMA(20) en Python pur depuis l historique.
-    Utilise en complement de fetch_tech_synthese pour les valeurs numeriques BB.
-    """
+def calc_indicateurs(df: pd.DataFrame) -> dict:
+    """RSI(14), BB(20,2), EMA(20) calculés en Python pur depuis l'historique."""
     if df.empty or len(df) < 14:
         return {}
-
     close = df["close"].values.astype(float)
     n = len(close)
-
-    # EMA20
     k = 2 / 21
     ema = [close[0]]
     for i in range(1, n):
         ema.append(close[i] * k + ema[-1] * (1 - k))
     ema20_val = ema[-1]
-
-    # RSI14
     deltas = np.diff(close)
     gains  = np.where(deltas > 0, deltas, 0.0)
     losses = np.where(deltas < 0, -deltas, 0.0)
@@ -468,8 +489,6 @@ def calc_indicateurs(df):
         rsi_val = 100 - (100 / (1 + rs))
     else:
         rsi_val = 50.0
-
-    # BB(20,2)
     if n >= 20:
         win    = close[-20:]
         bb_mid = np.mean(win)
@@ -478,9 +497,7 @@ def calc_indicateurs(df):
         bb_inf = bb_mid - 2 * bb_std
     else:
         bb_mid = close[-1]; bb_sup = close[-1] * 1.05; bb_inf = close[-1] * 0.95
-
     var_1s = ((close[-1] / close[-6]) - 1) * 100 if n >= 6 else 0.0
-
     return {
         "rsi":    round(rsi_val, 1),
         "ema20":  round(ema20_val, 0),
@@ -492,55 +509,39 @@ def calc_indicateurs(df):
     }
 
 
-def get_marche(ticker):
+def get_marche(ticker: str) -> dict:
     """
-    Pipeline de collecte donnees :
-      1. Cours actuel  <- fetch_cours()
-      2. Indicateurs   <- fetch_tech_synthese() : RSI numerique + positions BB/EMA
-      3. Valeurs num.  <- fetch_historique() + calc_indicateurs()
-                          BB sup/inf en FCFA, EMA20, var_1s
-    RSI synthese a priorite sur RSI calcule (plus precis).
+    Pipeline unifié :
+      1. Cours       ← fetch_cours()          richbourse → brvm.org → sikafinance
+      2. Tech qual.  ← fetch_tech_synthese()  RSI précis + positions BB/EMA
+      3. Tech num.   ← fetch_historique() + calc_indicateurs()
+                       BB sup/inf FCFA, EMA20, var_1s, nb_pts
+    Priorité RSI : synthèse richbourse > calcul local.
     """
     tk = ticker.upper().strip()
     result = {}
-
-    # 1. Cours du jour
     result.update(fetch_cours(tk))
-
-    # 2. Indicateurs : RSI numerique, positions BB/EMA, tendance
     result.update(fetch_tech_synthese(tk))
-
-    # 3. Historique -> valeurs numeriques BB/EMA/var_1s
     df_hist = fetch_historique(tk)
     if not df_hist.empty:
         indics = calc_indicateurs(df_hist)
         for k_ind, v_ind in indics.items():
             if k_ind == "rsi" and "rsi" in result:
-                continue  # priorite RSI synthese richbourse sur RSI calcule
+                continue  # RSI synthèse richbourse a priorité
             result[k_ind] = v_ind
         result["_source_tech"] = "richbourse+historique"
     elif "rsi" in result:
         result["_source_tech"] = "richbourse_only"
-    else:
-        # Fallback sikafinance si tout echoue
-        tech_sk = fetch_tech_sika(tk)
-        if tech_sk:
-            result.update({k: v for k, v in tech_sk.items() if k not in result})
-            result["_source_tech"] = "sikafinance"
-
     return result
 
-
-# ─────────────────────────────────────────────
-# CALCULS FINANCIERS
-# ─────────────────────────────────────────────
 def extrapoler(resultat, periode, secteur):
     s = SAISONNALITE_S1.get(secteur, 0.50)
-    if "9 mois" in periode:
-        return resultat/3*4, f"9M × 4/3", "Élevée"
-    elif "Semestriel" in periode:
-        return resultat/s, f"S1 ÷ {s:.2f}", "Modérée"
-    return resultat, "Données annuelles", "Annuelle"
+    if '9 mois' in periode:
+        return resultat/3*4, '9M x 4/3', 'Elevee'
+    elif 'Semestriel' in periode:
+        return resultat/s, f'S1 / {s:.2f}', 'Moderee'
+    return resultat, 'Donnees annuelles', 'Annuelle'
+
 
 def vi_dcf(bpa, g_bpa, taux):
     g1 = min(max(g_bpa/100, -0.10), 0.20)
