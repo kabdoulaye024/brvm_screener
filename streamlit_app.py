@@ -503,28 +503,28 @@ def _parse_html_for_ticker(html: str, ticker: str, source_label: str) -> dict:
     return {"_debug": debug}
 
 
+# Désactiver les warnings SSL verify=False (cert intermédiaire absent sur certains réseaux)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # ==========================================================
-# SOURCE 1 — brvm.org (site officiel, pas de bot-protection)
+# SOURCE 1 — brvm.org  (officiel BRVM)
+# verify=False : SSLCertVerificationError sur certains déploiements
+# Path correct : /fr/cours-actions/0  (pas /cours-titres/)
 # ==========================================================
 BRVM_ORG_BASE = "https://www.brvm.org"
 
 def _fetch_brvm_org(ticker: str, debug: list) -> dict:
-    """
-    Fetch depuis brvm.org/fr/cours-titres/0 — page unique listant tous les titres.
-    Structure de la table : Symbole | Désignation | Cours Réf (J-1) | Cours | Variation %
-    """
     tk = ticker.upper().strip()
     urls = [
-        f"{BRVM_ORG_BASE}/fr/cours-titres/0",
-        f"{BRVM_ORG_BASE}/fr/cours-titres/0/symbole/asc/100/1",
-        f"{BRVM_ORG_BASE}/fr/cours-titres/0/symbole/asc/60/1",
+        f"{BRVM_ORG_BASE}/fr/cours-actions/0",
+        f"{BRVM_ORG_BASE}/fr/cours-actions/0/symbole/asc/100/1",
     ]
     headers = {**HEADERS_HTTP, "Referer": BRVM_ORG_BASE}
-
     for url in urls:
         try:
-            r = requests.get(url, headers=headers, timeout=20)
-            debug.append(f"brvm.org HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            r = requests.get(url, headers=headers, timeout=20, verify=False)
+            debug.append(f"brvm.org HTTP {r.status_code} — {len(r.text):,} chars")
             if r.status_code != 200 or len(r.text) < 2000:
                 continue
             if tk not in r.text:
@@ -537,71 +537,94 @@ def _fetch_brvm_org(ticker: str, debug: list) -> dict:
                 return res
         except Exception as e:
             debug.append(f"  brvm.org exception: {e}")
-
     return {}
 
 
 # ==========================================================
-# SOURCE 2 — sika-finance.com
+# SOURCE 2 — sikafinance.com  (sans tiret — domaine correct)
+# URL confirmée : /marches/aaz  liste tous les titres BRVM
 # ==========================================================
-SIKA_BASE = "https://sika-finance.com"
+SIKA_BASE = "https://www.sikafinance.com"
 
 def _fetch_sika_finance(ticker: str, debug: list) -> dict:
     tk = ticker.upper().strip()
     urls = [
-        f"{SIKA_BASE}/bourse-en-direct/",
-        f"{SIKA_BASE}/valeur/BRVM/{tk}",
+        f"{SIKA_BASE}/marches/aaz",
+        f"{SIKA_BASE}/marches/cotations",
     ]
     headers = {**HEADERS_HTTP, "Referer": SIKA_BASE}
     for url in urls:
         try:
-            r = requests.get(url, headers=headers, timeout=20)
-            debug.append(f"sika-finance HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            r = requests.get(url, headers=headers, timeout=20, verify=False)
+            debug.append(f"sikafinance HTTP {r.status_code} — {len(r.text):,} chars")
             if r.status_code != 200 or len(r.text) < 2000:
                 continue
             if tk not in r.text:
-                debug.append(f"  '{tk}' absent du HTML sika-finance")
+                debug.append(f"  '{tk}' absent du HTML sikafinance")
                 continue
-            res = _parse_html_for_ticker(r.text, tk, "sika-finance")
+            res = _parse_html_for_ticker(r.text, tk, "sikafinance")
             debug.extend(res.pop("_debug", []))
             if "prix" in res:
-                res["_source"] = "sika-finance.com"
+                res["_source"] = "sikafinance.com"
                 return res
         except Exception as e:
-            debug.append(f"  sika-finance exception: {e}")
+            debug.append(f"  sikafinance exception: {e}")
     return {}
 
 
 # ==========================================================
-# SOURCE 3 — richbourse.com via Session (bypass partiel bot)
+# SOURCE 3 — madisinvest.com
+# URL confirmée : /actions/cotation
+# ==========================================================
+MADIS_BASE = "https://madisinvest.com"
+
+def _fetch_madisinvest(ticker: str, debug: list) -> dict:
+    tk = ticker.upper().strip()
+    urls = [
+        f"{MADIS_BASE}/actions/cotation",
+    ]
+    headers = {**HEADERS_HTTP, "Referer": MADIS_BASE}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20, verify=False)
+            debug.append(f"madisinvest HTTP {r.status_code} — {len(r.text):,} chars")
+            if r.status_code != 200 or len(r.text) < 2000:
+                continue
+            if tk not in r.text:
+                debug.append(f"  '{tk}' absent du HTML madisinvest")
+                continue
+            res = _parse_html_for_ticker(r.text, tk, "madisinvest")
+            debug.extend(res.pop("_debug", []))
+            if "prix" in res:
+                res["_source"] = "madisinvest.com"
+                return res
+        except Exception as e:
+            debug.append(f"  madisinvest exception: {e}")
+    return {}
+
+
+# ==========================================================
+# SOURCE 4 — richbourse.com via Session (Cloudflare partiel)
+# URL confirmée : /common/variation/index/veille/tout
 # ==========================================================
 def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
-    """
-    Utilise une Session requests pour récupérer les cookies
-    en visitant d'abord la homepage, puis les pages de cotation.
-    Contourne partiellement le blocage Cloudflare.
-    """
     tk = ticker.upper().strip()
     session = requests.Session()
     session.headers.update(HEADERS_HTTP)
-
-    # Pré-fetch homepage pour récupérer les cookies
     try:
-        r0 = session.get(RICHBOURSE_BASE + "/", timeout=15)
-        debug.append(f"richbourse.com HOME: HTTP {r0.status_code} — {len(r0.text):,} chars")
-        # Attendre un tout petit peu (Cloudflare "Waiting Room" parfois)
+        r0 = session.get(RICHBOURSE_BASE + "/", timeout=15, verify=False)
+        debug.append(f"richbourse HOME: HTTP {r0.status_code} — {len(r0.text):,} chars")
     except Exception as e:
-        debug.append(f"richbourse.com HOME fail: {e}")
+        debug.append(f"richbourse HOME fail: {e}")
         return {}
-
     urls = [
-        f"{RICHBOURSE_BASE}/common/variation/index",
         f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
+        f"{RICHBOURSE_BASE}/common/variation/index",
     ]
     for url in urls:
         try:
-            r = session.get(url, timeout=20)
-            debug.append(f"richbourse.com DATA: HTTP {r.status_code} — {len(r.text):,} chars — {url}")
+            r = session.get(url, timeout=20, verify=False)
+            debug.append(f"richbourse DATA: HTTP {r.status_code} — {len(r.text):,} chars")
             if r.status_code != 200 or len(r.text) < 2000:
                 continue
             if tk not in r.text:
@@ -613,49 +636,43 @@ def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
                 res["_source"] = "richbourse.com"
                 return res
         except Exception as e:
-            debug.append(f"  richbourse.com DATA fail: {e}")
-
+            debug.append(f"  richbourse DATA fail: {e}")
     return {}
 
 
 # ==========================================================
-# FETCH COURS — ORCHESTRATEUR MULTI-SOURCES (cache 30 min)
+# FETCH COURS — ORCHESTRATEUR (cache 30 min)
 # ==========================================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
     """
-    Récupère le cours actuel avec cascade de sources :
-      1. brvm.org       (site officiel BRVM, pas de bot-protection)
-      2. sika-finance    (agrégateur BRVM)
-      3. richbourse.com  (via Session avec pré-fetch cookies)
+    Cascade : brvm.org → sikafinance.com → madisinvest.com → richbourse.com
     """
     tk = ticker.upper().strip()
     all_debug = [f"=== fetch_cours({tk}) ==="]
-    all_errors = []
 
-    # ── Source 1 : brvm.org ───────────────────────────────
     all_debug.append("--- Tentative 1 : brvm.org ---")
     res = _fetch_brvm_org(tk, all_debug)
     if "prix" in res:
         return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','brvm.org')}"}
 
-    # ── Source 2 : sika-finance ───────────────────────────
-    all_debug.append("--- Tentative 2 : sika-finance.com ---")
+    all_debug.append("--- Tentative 2 : sikafinance.com ---")
     res = _fetch_sika_finance(tk, all_debug)
     if "prix" in res:
-        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','sika-finance')}"}
+        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','sikafinance')}"}
 
-    # ── Source 3 : richbourse via Session ─────────────────
-    all_debug.append("--- Tentative 3 : richbourse.com (Session) ---")
+    all_debug.append("--- Tentative 3 : madisinvest.com ---")
+    res = _fetch_madisinvest(tk, all_debug)
+    if "prix" in res:
+        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','madisinvest')}"}
+
+    all_debug.append("--- Tentative 4 : richbourse.com (Session) ---")
     res = _fetch_richbourse_session(tk, all_debug)
     if "prix" in res:
         return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','richbourse')}"}
 
     all_debug.append("❌ Toutes les sources ont échoué — saisie manuelle requise")
-    return {
-        "_erreurs_cours": all_errors,
-        "_debug_info":    all_debug,
-    }
+    return {"_debug_info": all_debug}
 
 
 # ==========================================================
@@ -735,15 +752,13 @@ def _parse_historique_html(html: str, nb_jours: int) -> pd.DataFrame:
 def fetch_historique_richbourse(ticker: str, nb_jours: int = 120) -> pd.DataFrame:
     tk = ticker.upper()
     urls = [
-        # brvm.org historique
         f"{BRVM_ORG_BASE}/fr/cours-historiques/0/symbole/{tk}",
         f"{BRVM_ORG_BASE}/fr/cours-historiques/0/symbole/{tk}/asc/120/1",
-        # richbourse historique (peut fonctionner même si l'index est bloqué)
         f"{RICHBOURSE_BASE}/common/variation/historique/{tk}",
     ]
     for url in urls:
         try:
-            resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
+            resp = requests.get(url, headers=HEADERS_HTTP, timeout=15, verify=False)
             if resp.status_code != 200 or len(resp.text) < 1000:
                 continue
             df = _parse_historique_html(resp.text, nb_jours)
@@ -1166,15 +1181,15 @@ with tab1:
 
                 st.markdown("""---
 **Sources tentées dans l'ordre :**
-1. `brvm.org/fr/cours-titres/0` — site officiel BRVM (prioritaire)
-2. `sika-finance.com/bourse-en-direct/` — agrégateur BRVM
-3. `richbourse.com` via Session avec pré-fetch cookies
+1. `brvm.org/fr/cours-actions/0` — site officiel BRVM
+2. `sikafinance.com/marches/aaz` — agrégateur BRVM
+3. `madisinvest.com/actions/cotation` — agrégateur BRVM
+4. `richbourse.com` — via Session (Cloudflare partiel)
 
-**Solutions si tout échoue :**
-- Vérifier la connexion internet depuis le serveur Streamlit
-- Installer les parseurs : `pip install beautifulsoup4 lxml html5lib`
+**Si toutes les sources échouent :**
+- Vider le cache (sidebar) puis réessayer
+- Installer : `pip install beautifulsoup4 lxml html5lib`
 - Saisir le cours manuellement dans le formulaire
-- Cliquer **🗑️ Vider le cache cours** puis réessayer
 """)
 
     # ── Alerte période intermédiaire ──────────────────────
