@@ -508,111 +508,164 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================================
-# UTILITAIRE — Extraire endpoints JSON depuis HTML skeleton
+# UTILITAIRES SCRAPING
 # ==========================================================
-def _extract_api_endpoints(html: str, base_url: str) -> list:
+
+def _get_session(referer: str = "") -> requests.Session:
+    s = requests.Session()
+    s.headers.update({**HEADERS_HTTP})
+    if referer:
+        s.headers["Referer"] = referer
+    return s
+
+
+def _fetch_html(session, url: str, debug: list) -> str | None:
+    """Fetch HTML et log. Retourne le texte ou None."""
+    try:
+        r = session.get(url, timeout=20, verify=False)
+        debug.append(f"  GET {r.status_code} {len(r.text):,}c  {url}")
+        if r.status_code == 200 and len(r.text) > 500:
+            return r.text
+    except Exception as e:
+        debug.append(f"  GET FAIL {url} → {e}")
+    return None
+
+
+def _extract_script_urls(html: str, base: str) -> list:
+    """Extrait les URLs des fichiers .js depuis le HTML (balises <script src=>)."""
+    if not HAS_BS4:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    urls = []
+    for tag in soup.find_all("script", src=True):
+        src = tag["src"]
+        if not src.startswith("http"):
+            src = base.rstrip("/") + "/" + src.lstrip("/")
+        if src not in urls:
+            urls.append(src)
+    return urls
+
+
+def _extract_api_urls_from_js(js_text: str, base: str) -> list:
     """
-    Cherche des endpoints API/JSON dans le source HTML/JS d'une page skeleton.
-    Retourne une liste d'URLs candidates.
+    Cherche des patterns d'endpoints API dans un fichier JS minifié.
+    Retourne une liste d'URLs absolues candidates.
     """
     patterns = [
-        r'["\']([/][^\s"\'<>]{3,80}(?:json|api|cotation|cours|action|data|ajax)[^\s"\'<>]{0,40})["\']',
-        r'fetch\s*\(\s*["\']([^"\']{5,120})["\']',
-        r'axios\.get\s*\(\s*["\']([^"\']{5,120})["\']',
-        r'\$\.(?:get|ajax)\s*\(\s*["\']([^"\']{5,120})["\']',
-        r'url\s*:\s*["\']([^"\']{5,120})["\']',
-        r'_format=json',
-        r'["\']([/][^\s"\'<>]{0,60}\?[^\s"\'<>]{0,60}_format=json[^\s"\'<>]{0,40})["\']',
+        # URLs relatives avec mot-clé API
+        r'["\`](/(?:api|v\d|rest|json|data|fetch|ajax|ws)[^"\`\s<>]{2,100})["\`]',
+        # fetch() calls
+        r'fetch\s*\(\s*["\`]([^"\`\s]{5,150})["\`]',
+        # axios calls
+        r'axios\.(?:get|post)\s*\(\s*["\`]([^"\`\s]{5,150})["\`]',
+        # baseURL / apiUrl assignments
+        r'(?:baseURL|apiUrl|apiBase|baseApi|endpoint)\s*[=:]\s*["\`]([^"\`\s]{5,100})["\`]',
+        # Path strings that look like API routes
+        r'["\`](/(?:cours|cotation|action|marche|bourse|variation|titre)[^"\`\s<>]{0,80})["\`]',
     ]
     found = []
     for pat in patterns:
-        for m in _re.finditer(pat, html, _re.IGNORECASE):
-            url = m.group(1) if m.lastindex else m.group(0)
+        for m in _re.finditer(pat, js_text):
+            url = m.group(1)
             if url.startswith("/"):
-                url = base_url.rstrip("/") + url
+                url = base.rstrip("/") + url
             if url.startswith("http") and url not in found:
                 found.append(url)
-            elif url.startswith("/") and url not in found:
-                found.append(url)
-    return found[:20]
+    return found[:30]
 
 
-# ==========================================================
-# UTILITAIRE — Parser JSON BRVM (formats courants)
-# ==========================================================
+def _try_json_endpoint(session, url: str, ticker: str, debug: list) -> dict:
+    """Tente de récupérer le cours depuis un endpoint JSON."""
+    try:
+        r = session.get(url, timeout=10, verify=False, headers={
+            **HEADERS_HTTP,
+            "Accept": "application/json, text/json, */*",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        debug.append(f"    JSON {r.status_code} {len(r.text):,}c  {url[:70]}")
+        if r.status_code != 200 or len(r.text) < 10:
+            return {}
+        # Essai JSON
+        try:
+            data = r.json()
+            res = _parse_json_brvm(data, ticker)
+            if "prix" in res:
+                debug.append(f"    ✅ JSON match!")
+                return res
+        except Exception:
+            pass
+        # Essai HTML si JSON échoue
+        if ticker in r.text:
+            res = _parse_html_for_ticker(r.text, ticker, url[:40])
+            debug.extend(res.pop("_debug", []))
+            if "prix" in res:
+                return res
+    except Exception as e:
+        debug.append(f"    endpoint FAIL: {e}")
+    return {}
+
+
 def _parse_json_brvm(data, ticker: str) -> dict:
     """
-    Tente d'extraire prix/variation depuis différents formats JSON BRVM.
-    Supporte : liste de dicts, dict avec clé 'data', Drupal views JSON, etc.
+    Parse différents formats JSON pour extraire prix/variation du ticker.
+    Supporte : liste plate, dict avec 'data'/'rows'/'items', Drupal views, etc.
     """
     tk = ticker.upper().strip()
 
     # Normaliser en liste
+    rows = data
     if isinstance(data, dict):
-        for key in ("data", "results", "cours", "cotations", "items", "rows", "records"):
+        for key in ("data", "results", "cours", "cotations", "items",
+                    "rows", "records", "values", "content"):
             if key in data and isinstance(data[key], list):
-                data = data[key]
+                rows = data[key]
                 break
         else:
-            data = [data]
+            rows = [data]
 
-    if not isinstance(data, list):
+    if not isinstance(rows, list):
         return {}
 
-    for item in data:
+    for item in rows:
         if not isinstance(item, dict):
             continue
-
-        # Chercher le ticker dans les valeurs de l'item
-        item_str = json.dumps(item, ensure_ascii=False).upper()
-        if tk not in item_str:
-            continue
-
-        # Chercher le ticker dans les champs courants
-        ticker_fields = ["symbole", "symbol", "ticker", "code", "sigle", "valeur",
-                         "libelle", "designation", "titre", "action"]
-        ticker_match = False
-        for f in ticker_fields:
-            for k, v in item.items():
-                if k.lower().strip() == f and str(v).upper().strip() == tk:
-                    ticker_match = True
-                    break
-            if ticker_match:
-                break
-
-        if not ticker_match:
-            # Vérification directe dans les valeurs
-            if not any(str(v).upper().strip() == tk for v in item.values()):
+        # Vérifier que cet item concerne notre ticker
+        item_vals = [str(v).upper().strip() for v in item.values()]
+        if tk not in item_vals:
+            # Essai dans les valeurs imbriquées
+            item_str = json.dumps(item, ensure_ascii=False).upper()
+            if tk not in item_str:
                 continue
 
-        # Chercher le prix
-        prix_fields = ["cours", "prix", "cotation", "close", "last", "cloture",
-                       "dernier_cours", "cours_actuel", "valeur_cours",
-                       "field_cours", "field_prix"]
+        # Trouver le prix
+        price_keys = ["cours", "prix", "cotation", "close", "last", "cloture",
+                      "dernier_cours", "cours_actuel", "valeur", "price",
+                      "prixcloture", "cloture_cours", "cours_cloture"]
         px = None
-        for f in prix_fields:
-            for k, v in item.items():
-                if f in k.lower():
-                    candidate = _try_num(v)
-                    if candidate and candidate > 10:
-                        px = candidate
-                        break
-            if px:
-                break
+        for k, v in item.items():
+            if any(pk in k.lower() for pk in price_keys):
+                c = _try_num(v)
+                if c and c > 10:
+                    px = c
+                    break
+        # Fallback : première valeur numérique > 10 dans l'item
+        if not px:
+            for v in item.values():
+                c = _try_num(v)
+                if c and c > 10:
+                    px = c
+                    break
 
-        # Chercher variation
-        var_fields = ["variation", "var", "evolution", "perf", "change",
-                      "pct", "field_variation"]
+        # Trouver la variation
+        var_keys = ["variation", "var", "evolution", "perf", "change",
+                    "pct", "taux", "rendement"]
         vr = 0.0
-        for f in var_fields:
-            for k, v in item.items():
-                if f in k.lower():
-                    candidate = _try_num(v)
-                    if candidate is not None:
-                        vr = candidate
-                        break
-            if vr != 0.0:
-                break
+        for k, v in item.items():
+            if any(vk in k.lower() for vk in var_keys):
+                c = _try_num(v)
+                if c is not None:
+                    vr = c
+                    break
 
         if px and px > 0:
             return {"prix": px, "variation_pct": vr}
@@ -621,276 +674,170 @@ def _parse_json_brvm(data, ticker: str) -> dict:
 
 
 # ==========================================================
-# SOURCE 1 — brvm.org  (officiel BRVM)
-# Stratégie : HTML skeleton → cherche endpoint JSON dans le source
-#             puis essaie _format=json (Drupal), puis parsing HTML direct
+# CŒUR — Fetch une source : HTML → script .js → endpoints JSON
 # ==========================================================
-BRVM_ORG_BASE = "https://www.brvm.org"
-
-def _fetch_brvm_org(ticker: str, debug: list) -> dict:
+def _fetch_source(
+    ticker: str,
+    debug: list,
+    source_name: str,
+    base_url: str,
+    page_urls: list,
+    extra_api_urls: list = None,
+) -> dict:
+    """
+    Stratégie universelle pour une source :
+      1. HTML direct → si ticker trouvé → parser
+      2. Chercher les fichiers .js dans le HTML → les fetcher → extraire endpoints
+      3. Essayer les endpoints JSON (trouvés + extra_api_urls)
+    """
     tk = ticker.upper().strip()
-    session = requests.Session()
-    session.headers.update({**HEADERS_HTTP, "Referer": BRVM_ORG_BASE})
-
-    page_urls = [
-        f"{BRVM_ORG_BASE}/fr/cours-actions/0",
-        f"{BRVM_ORG_BASE}/fr/cours-actions/0/symbole/asc/100/1",
-    ]
+    session = _get_session(base_url)
+    extra_api_urls = extra_api_urls or []
+    all_api_candidates = list(extra_api_urls)  # on commence par les connus
 
     for page_url in page_urls:
-        try:
-            r = session.get(page_url, timeout=20, verify=False)
-            debug.append(f"brvm.org HTML {r.status_code} — {len(r.text):,} chars")
-            if r.status_code != 200:
-                continue
+        html = _fetch_html(session, page_url, debug)
+        if not html:
+            continue
 
-            # ── A : Parsing HTML direct si données présentes ──
-            if tk in r.text:
-                res = _parse_html_for_ticker(r.text, tk, "brvm.org")
-                debug.extend(res.pop("_debug", []))
-                if "prix" in res:
-                    res["_source"] = "brvm.org"
-                    return res
-
-            # ── B : Chercher endpoints JSON dans le source JS ──
-            endpoints = _extract_api_endpoints(r.text, BRVM_ORG_BASE)
-
-            # Ajouter les candidats Drupal classiques
-            drupal_extras = [
-                f"{BRVM_ORG_BASE}/fr/cours-actions/0?_format=json",
-                f"{BRVM_ORG_BASE}/fr/cours-actions/0/symbole/asc/100/1?_format=json",
-                f"{BRVM_ORG_BASE}/api/cours-actions",
-                f"{BRVM_ORG_BASE}/api/cours",
-                f"{BRVM_ORG_BASE}/fr/views/ajax",
-            ]
-            all_candidates = list(dict.fromkeys(endpoints + drupal_extras))
-            debug.append(f"  endpoints trouvés: {len(endpoints)} + {len(drupal_extras)} Drupal = {len(all_candidates)}")
-
-            for ep_url in all_candidates[:12]:
-                try:
-                    ep_url_full = ep_url if ep_url.startswith("http") else BRVM_ORG_BASE + ep_url
-                    rj = session.get(ep_url_full, timeout=10, verify=False,
-                                     headers={**HEADERS_HTTP,
-                                              "Accept": "application/json, text/html",
-                                              "X-Requested-With": "XMLHttpRequest"})
-                    debug.append(f"  → {rj.status_code} {len(rj.text):,}c {ep_url_full[:60]}")
-
-                    if rj.status_code != 200 or len(rj.text) < 50:
-                        continue
-
-                    # Essai JSON
-                    try:
-                        data = rj.json()
-                        res_json = _parse_json_brvm(data, tk)
-                        if "prix" in res_json:
-                            debug.append(f"  ✅ JSON endpoint: {ep_url_full[:60]}")
-                            res_json["_source"] = "brvm.org/json"
-                            return res_json
-                    except Exception:
-                        pass
-
-                    # Essai HTML si JSON échoue
-                    if tk in rj.text:
-                        res = _parse_html_for_ticker(rj.text, tk, "brvm.org/ep")
-                        debug.extend(res.pop("_debug", []))
-                        if "prix" in res:
-                            res["_source"] = "brvm.org"
-                            return res
-
-                except Exception as e:
-                    debug.append(f"  endpoint fail: {e}")
-
-        except Exception as e:
-            debug.append(f"  brvm.org exception: {e}")
-
-    return {}
-
-
-# ==========================================================
-# SOURCE 2 — sikafinance.com  (domaine sans tiret)
-# URL confirmée : /marches/aaz
-# ==========================================================
-SIKA_BASE = "https://www.sikafinance.com"
-
-def _fetch_sika_finance(ticker: str, debug: list) -> dict:
-    tk = ticker.upper().strip()
-    session = requests.Session()
-    session.headers.update({**HEADERS_HTTP, "Referer": SIKA_BASE})
-
-    page_urls = [
-        f"{SIKA_BASE}/marches/aaz",
-        f"{SIKA_BASE}/marches/cotations",
-        f"{SIKA_BASE}/valeur/{tk}",
-        f"{SIKA_BASE}/valeur/BRVM-{tk}",
-    ]
-
-    for page_url in page_urls:
-        try:
-            r = session.get(page_url, timeout=20, verify=False)
-            debug.append(f"sikafinance HTML {r.status_code} — {len(r.text):,} chars")
-            if r.status_code not in (200,):
-                continue
-
-            if tk in r.text:
-                res = _parse_html_for_ticker(r.text, tk, "sikafinance")
-                debug.extend(res.pop("_debug", []))
-                if "prix" in res:
-                    res["_source"] = "sikafinance.com"
-                    return res
-
-            # Chercher endpoints JSON dans le source
-            endpoints = _extract_api_endpoints(r.text, SIKA_BASE)
-            sika_extras = [
-                f"{SIKA_BASE}/api/cotations",
-                f"{SIKA_BASE}/api/marches",
-                f"{SIKA_BASE}/api/cours",
-                f"{SIKA_BASE}/api/actions",
-            ]
-            all_ep = list(dict.fromkeys(endpoints + sika_extras))
-
-            for ep_url in all_ep[:10]:
-                try:
-                    ep_url_full = ep_url if ep_url.startswith("http") else SIKA_BASE + ep_url
-                    rj = session.get(ep_url_full, timeout=10, verify=False,
-                                     headers={**HEADERS_HTTP,
-                                              "Accept": "application/json",
-                                              "X-Requested-With": "XMLHttpRequest"})
-                    if rj.status_code != 200 or len(rj.text) < 50:
-                        continue
-                    debug.append(f"  → sika ep {rj.status_code} {len(rj.text):,}c")
-                    try:
-                        data = rj.json()
-                        res_json = _parse_json_brvm(data, tk)
-                        if "prix" in res_json:
-                            res_json["_source"] = "sikafinance.com/json"
-                            return res_json
-                    except Exception:
-                        pass
-                    if tk in rj.text:
-                        res = _parse_html_for_ticker(rj.text, tk, "sikafinance/ep")
-                        debug.extend(res.pop("_debug", []))
-                        if "prix" in res:
-                            res["_source"] = "sikafinance.com"
-                            return res
-                except Exception:
-                    pass
-
-        except Exception as e:
-            debug.append(f"  sikafinance exception: {e}")
-
-    return {}
-
-
-# ==========================================================
-# SOURCE 3 — madisinvest.com
-# URL confirmée : /actions/cotation
-# ==========================================================
-MADIS_BASE = "https://madisinvest.com"
-
-def _fetch_madisinvest(ticker: str, debug: list) -> dict:
-    tk = ticker.upper().strip()
-    session = requests.Session()
-    session.headers.update({**HEADERS_HTTP, "Referer": MADIS_BASE})
-
-    page_urls = [
-        f"{MADIS_BASE}/actions/cotation",
-        f"{MADIS_BASE}/actions/{tk}",
-    ]
-
-    for page_url in page_urls:
-        try:
-            r = session.get(page_url, timeout=20, verify=False)
-            debug.append(f"madisinvest HTML {r.status_code} — {len(r.text):,} chars")
-            if r.status_code != 200:
-                continue
-
-            if tk in r.text:
-                res = _parse_html_for_ticker(r.text, tk, "madisinvest")
-                debug.extend(res.pop("_debug", []))
-                if "prix" in res:
-                    res["_source"] = "madisinvest.com"
-                    return res
-
-            endpoints = _extract_api_endpoints(r.text, MADIS_BASE)
-            madis_extras = [
-                f"{MADIS_BASE}/api/cotations",
-                f"{MADIS_BASE}/api/cours",
-                f"{MADIS_BASE}/api/actions",
-            ]
-            all_ep = list(dict.fromkeys(endpoints + madis_extras))
-
-            for ep_url in all_ep[:10]:
-                try:
-                    ep_url_full = ep_url if ep_url.startswith("http") else MADIS_BASE + ep_url
-                    rj = session.get(ep_url_full, timeout=10, verify=False,
-                                     headers={**HEADERS_HTTP,
-                                              "Accept": "application/json",
-                                              "X-Requested-With": "XMLHttpRequest"})
-                    if rj.status_code != 200 or len(rj.text) < 50:
-                        continue
-                    debug.append(f"  → madis ep {rj.status_code} {len(rj.text):,}c")
-                    try:
-                        data = rj.json()
-                        res_json = _parse_json_brvm(data, tk)
-                        if "prix" in res_json:
-                            res_json["_source"] = "madisinvest.com/json"
-                            return res_json
-                    except Exception:
-                        pass
-                    if tk in rj.text:
-                        res = _parse_html_for_ticker(rj.text, tk, "madisinvest/ep")
-                        debug.extend(res.pop("_debug", []))
-                        if "prix" in res:
-                            res["_source"] = "madisinvest.com"
-                            return res
-                except Exception:
-                    pass
-
-        except Exception as e:
-            debug.append(f"  madisinvest exception: {e}")
-
-    return {}
-
-
-# ==========================================================
-# SOURCE 4 — richbourse.com via Session (Cloudflare partiel)
-# URL confirmée : /common/variation/index/veille/tout
-# ==========================================================
-def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
-    tk = ticker.upper().strip()
-    session = requests.Session()
-    session.headers.update(HEADERS_HTTP)
-    try:
-        r0 = session.get(RICHBOURSE_BASE + "/", timeout=15, verify=False)
-        debug.append(f"richbourse HOME: HTTP {r0.status_code} — {len(r0.text):,} chars")
-        if r0.status_code == 200 and len(r0.text) > 2000:
-            # Tenter immédiatement si le home page contient les données
-            endpoints = _extract_api_endpoints(r0.text, RICHBOURSE_BASE)
-            debug.append(f"  richbourse endpoints trouvés: {endpoints[:5]}")
-    except Exception as e:
-        debug.append(f"richbourse HOME fail: {e}")
-        return {}
-
-    urls = [
-        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
-        f"{RICHBOURSE_BASE}/common/variation/index",
-    ]
-    for url in urls:
-        try:
-            r = session.get(url, timeout=20, verify=False)
-            debug.append(f"richbourse DATA: HTTP {r.status_code} — {len(r.text):,} chars")
-            if r.status_code != 200 or len(r.text) < 2000:
-                continue
-            if tk not in r.text:
-                debug.append(f"  '{tk}' absent du HTML richbourse")
-                continue
-            res = _parse_html_for_ticker(r.text, tk, "richbourse")
+        # ── 1. HTML direct ────────────────────────────────
+        if tk in html:
+            res = _parse_html_for_ticker(html, tk, source_name)
             debug.extend(res.pop("_debug", []))
             if "prix" in res:
-                res["_source"] = "richbourse.com"
+                res["_source"] = source_name
                 return res
+
+        # ── 2. Extraire URLs des fichiers .js ─────────────
+        script_urls = _extract_script_urls(html, base_url)
+        debug.append(f"  {source_name}: {len(script_urls)} fichier(s) JS trouvé(s)")
+
+        for js_url in script_urls[:8]:  # limiter pour ne pas être trop lent
+            try:
+                rjs = session.get(js_url, timeout=15, verify=False)
+                if rjs.status_code != 200 or len(rjs.text) < 100:
+                    continue
+                endpoints_from_js = _extract_api_urls_from_js(rjs.text, base_url)
+                new_eps = [e for e in endpoints_from_js if e not in all_api_candidates]
+                if new_eps:
+                    debug.append(f"  → JS {js_url[-40:]}: {len(new_eps)} endpoint(s) trouvé(s)")
+                    all_api_candidates.extend(new_eps)
+            except Exception:
+                pass
+
+    # ── 3. Tester tous les endpoints JSON trouvés ─────────
+    debug.append(f"  {source_name}: test de {len(all_api_candidates)} endpoint(s) JSON")
+    seen = set()
+    for ep_url in all_api_candidates:
+        if ep_url in seen:
+            continue
+        seen.add(ep_url)
+        res = _try_json_endpoint(session, ep_url, tk, debug)
+        if "prix" in res:
+            res["_source"] = f"{source_name}/api"
+            return res
+
+    return {}
+
+
+# ==========================================================
+# SOURCES
+# ==========================================================
+BRVM_ORG_BASE = "https://www.brvm.org"
+SIKA_BASE     = "https://www.sikafinance.com"
+MADIS_BASE    = "https://madisinvest.com"
+
+
+def _fetch_brvm_org(ticker: str, debug: list) -> dict:
+    return _fetch_source(
+        ticker, debug,
+        source_name="brvm.org",
+        base_url=BRVM_ORG_BASE,
+        page_urls=[
+            f"{BRVM_ORG_BASE}/fr/cours-actions/0",
+            f"{BRVM_ORG_BASE}/fr/cours-actions/0/symbole/asc/100/1",
+        ],
+        extra_api_urls=[
+            # Endpoints Drupal Views AJAX
+            f"{BRVM_ORG_BASE}/views/ajax?view_name=cours_actions&view_display_id=block_1",
+            f"{BRVM_ORG_BASE}/views/ajax?view_name=cours_titres&view_display_id=block_1",
+            f"{BRVM_ORG_BASE}/fr/views/ajax?view_name=cours_actions&view_display_id=block_1",
+            # JSON:API Drupal
+            f"{BRVM_ORG_BASE}/jsonapi/node/cours_action",
+            f"{BRVM_ORG_BASE}/jsonapi/cours",
+            # REST
+            f"{BRVM_ORG_BASE}/api/cours-actions",
+            f"{BRVM_ORG_BASE}/api/cours",
+            f"{BRVM_ORG_BASE}/api/cotations",
+            f"{BRVM_ORG_BASE}/rest/cotations",
+        ],
+    )
+
+
+def _fetch_sika_finance(ticker: str, debug: list) -> dict:
+    return _fetch_source(
+        ticker, debug,
+        source_name="sikafinance",
+        base_url=SIKA_BASE,
+        page_urls=[
+            f"{SIKA_BASE}/marches/aaz",
+        ],
+        extra_api_urls=[
+            f"{SIKA_BASE}/api/cotations",
+            f"{SIKA_BASE}/api/marches",
+            f"{SIKA_BASE}/api/cours",
+            f"{SIKA_BASE}/api/brvm/cotations",
+            f"{SIKA_BASE}/api/v1/cotations",
+            f"{SIKA_BASE}/api/v1/cours",
+            f"{SIKA_BASE}/data/cotations.json",
+            f"{SIKA_BASE}/marches/cotations.json",
+        ],
+    )
+
+
+def _fetch_madisinvest(ticker: str, debug: list) -> dict:
+    return _fetch_source(
+        ticker, debug,
+        source_name="madisinvest",
+        base_url=MADIS_BASE,
+        page_urls=[
+            f"{MADIS_BASE}/actions/cotation",
+        ],
+        extra_api_urls=[
+            f"{MADIS_BASE}/api/cotations",
+            f"{MADIS_BASE}/api/cours",
+            f"{MADIS_BASE}/api/actions",
+            f"{MADIS_BASE}/api/v1/cotations",
+            f"{MADIS_BASE}/api/brvm",
+            f"{MADIS_BASE}/data/cotations.json",
+        ],
+    )
+
+
+def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
+    tk = ticker.upper().strip()
+    session = _get_session(RICHBOURSE_BASE)
+    try:
+        r0 = session.get(RICHBOURSE_BASE + "/", timeout=15, verify=False)
+        debug.append(f"  richbourse HOME: {r0.status_code} {len(r0.text):,}c")
+    except Exception as e:
+        debug.append(f"  richbourse HOME FAIL: {e}")
+        return {}
+    for url in [
+        f"{RICHBOURSE_BASE}/common/variation/index/veille/tout",
+        f"{RICHBOURSE_BASE}/common/variation/index",
+    ]:
+        try:
+            r = session.get(url, timeout=20, verify=False)
+            debug.append(f"  richbourse DATA: {r.status_code} {len(r.text):,}c")
+            if r.status_code == 200 and len(r.text) > 2000 and tk in r.text:
+                res = _parse_html_for_ticker(r.text, tk, "richbourse")
+                debug.extend(res.pop("_debug", []))
+                if "prix" in res:
+                    res["_source"] = "richbourse.com"
+                    return res
         except Exception as e:
-            debug.append(f"  richbourse DATA fail: {e}")
+            debug.append(f"  richbourse DATA FAIL: {e}")
     return {}
 
 
@@ -900,36 +847,27 @@ def _fetch_richbourse_session(ticker: str, debug: list) -> dict:
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_cours_richbourse(ticker: str) -> dict:
     """
-    Cascade avec détection automatique d'API JSON :
-    brvm.org → sikafinance.com → madisinvest.com → richbourse.com
-    Chaque source tente d'abord le HTML direct, puis cherche les endpoints
-    JSON/AJAX embarqués dans le source JS de la page skeleton.
+    Cascade : brvm.org → sikafinance.com → madisinvest.com → richbourse.com
+    Chaque source : HTML direct → scan fichiers JS → endpoints JSON/API.
     """
     tk = ticker.upper().strip()
     all_debug = [f"=== fetch_cours({tk}) ==="]
 
-    all_debug.append("--- Tentative 1 : brvm.org ---")
-    res = _fetch_brvm_org(tk, all_debug)
-    if "prix" in res:
-        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','brvm.org')}"}
-
-    all_debug.append("--- Tentative 2 : sikafinance.com ---")
-    res = _fetch_sika_finance(tk, all_debug)
-    if "prix" in res:
-        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','sikafinance')}"}
-
-    all_debug.append("--- Tentative 3 : madisinvest.com ---")
-    res = _fetch_madisinvest(tk, all_debug)
-    if "prix" in res:
-        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','madisinvest')}"}
-
-    all_debug.append("--- Tentative 4 : richbourse.com (Session) ---")
-    res = _fetch_richbourse_session(tk, all_debug)
-    if "prix" in res:
-        return {**res, "_debug_info": all_debug, "_methode": f"AUTO/{res.get('_source','richbourse')}"}
+    for label, fn in [
+        ("brvm.org",         _fetch_brvm_org),
+        ("sikafinance.com",  _fetch_sika_finance),
+        ("madisinvest.com",  _fetch_madisinvest),
+        ("richbourse.com",   _fetch_richbourse_session),
+    ]:
+        all_debug.append(f"--- {label} ---")
+        res = fn(tk, all_debug)
+        if "prix" in res:
+            return {**res, "_debug_info": all_debug,
+                    "_methode": f"AUTO/{res.get('_source', label)}"}
 
     all_debug.append("❌ Toutes les sources ont échoué — saisie manuelle requise")
     return {"_debug_info": all_debug}
+
 
 
 # ==========================================================
