@@ -430,82 +430,101 @@ def fetch_tech_synthese(ticker: str) -> dict:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
-    """
-    richbourse.com/common/variation/historique/TICKER
-    Endpoint dédié par ticker — colonnes avec accents telles quelles.
-    """
-    tk  = ticker.upper()
+
+    tk = ticker.upper()
     url = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+        "Referer": "https://www.richbourse.com/"
+    }
+
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-        resp.raise_for_status()
-        for df in pd.read_html(StringIO(resp.text)):
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            # Accents conservés tels quels après .lower()
-            col_d = next((c for c in df.columns if any(k in c for k in
-                          ["date", "séance", "jour"])), None)
-            col_c = next((c for c in df.columns if any(k in c for k in
-                          ["cours", "clôture", "close", "normal"])), None)
-            if col_d and col_c:
-                df2 = df[[col_d, col_c]].copy()
-                df2.columns = ["date", "close"]
-                df2["date"]  = pd.to_datetime(df2["date"], errors="coerce", dayfirst=True)
-                df2["close"] = pd.to_numeric(
-                    df2["close"].astype(str)
-                    .str.replace(" ", "", regex=False)
-                    .str.replace(" ", "", regex=False)
-                    .str.replace(" ", "", regex=False)
-                    .str.replace(",", ".", regex=False),
-                    errors="coerce"
-                )
-                df2 = df2.dropna().sort_values("date").tail(nb).reset_index(drop=True)
-                if len(df2) >= 10:
-                    return df2
-    except Exception:
-        pass
-    return pd.DataFrame()
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+
+        tables = pd.read_html(StringIO(resp.text))
+
+        if not tables:
+            return pd.DataFrame()
+
+        df = tables[0].copy()
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        # Identification colonnes
+        col_date = next((c for c in df.columns if "date" in c or "séance" in c), None)
+        col_close = next((c for c in df.columns if "cours" in c or "clôture" in c), None)
+
+        if not col_date or not col_close:
+            return pd.DataFrame()
+
+        df = df[[col_date, col_close]].copy()
+        df.columns = ["date", "close"]
+
+        df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+
+        df["close"] = (
+            df["close"]
+            .astype(str)
+            .str.replace("\xa0", "", regex=False)
+            .str.replace(" ", "", regex=False)
+            .str.replace(" ", "", regex=False)
+            .str.replace(",", ".", regex=False)
+        )
+
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+
+        df = df.dropna()
+        df = df[df["close"] > 0]
+        df = df.drop_duplicates("date")
+        df = df.sort_values("date")
+
+        if len(df) < 20:
+            return pd.DataFrame()
+
+        return df.tail(nb).reset_index(drop=True)
+
+    except Exception as e:
+        print("Erreur historique:", e)
+        return pd.DataFrame()
 
 
 def calc_indicateurs(df: pd.DataFrame) -> dict:
-    """RSI(14), BB(20,2), EMA(20) calculés en Python pur depuis l'historique."""
-    if df.empty or len(df) < 14:
+    if df.empty or len(df) < 20:
         return {}
-    close = df["close"].values.astype(float)
-    n = len(close)
-    k = 2 / 21
-    ema = [close[0]]
-    for i in range(1, n):
-        ema.append(close[i] * k + ema[-1] * (1 - k))
-    ema20_val = ema[-1]
-    deltas = np.diff(close)
-    gains  = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-    if len(gains) >= 14:
-        ag, al = np.mean(gains[:14]), np.mean(losses[:14])
-        for i in range(14, len(gains)):
-            ag = (ag * 13 + gains[i]) / 14
-            al = (al * 13 + losses[i]) / 14
-        rs = ag / al if al > 0 else 100
-        rsi_val = 100 - (100 / (1 + rs))
-    else:
-        rsi_val = 50.0
-    if n >= 20:
-        win    = close[-20:]
-        bb_mid = np.mean(win)
-        bb_std = np.std(win, ddof=1)
-        bb_sup = bb_mid + 2 * bb_std
-        bb_inf = bb_mid - 2 * bb_std
-    else:
-        bb_mid = close[-1]; bb_sup = close[-1] * 1.05; bb_inf = close[-1] * 0.95
-    var_1s = ((close[-1] / close[-6]) - 1) * 100 if n >= 6 else 0.0
+
+    close = df["close"]
+
+    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    rsi_val = rsi.iloc[-1]
+
+    bb_mid = close.rolling(20).mean().iloc[-1]
+    bb_std = close.rolling(20).std().iloc[-1]
+    bb_sup = bb_mid + 2 * bb_std
+    bb_inf = bb_mid - 2 * bb_std
+
+    var_1s = (close.iloc[-1] / close.iloc[-6] - 1) * 100
+
     return {
-        "rsi":    round(rsi_val, 1),
-        "ema20":  round(ema20_val, 0),
+        "rsi": round(rsi_val, 1),
+        "ema20": round(ema20, 0),
         "bb_sup": round(bb_sup, 0),
         "bb_inf": round(bb_inf, 0),
         "bb_mid": round(bb_mid, 0),
         "var_1s": round(var_1s, 2),
-        "nb_pts": n,
+        "nb_pts": len(close),
     }
 
 
