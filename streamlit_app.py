@@ -695,7 +695,7 @@ with tab1:
         # Prix
         px_def   = mdata.get("prix", 1000.0)
         px_label = f"💰 Prix actuel FCFA {'['+mdata['source']+']' if 'source' in mdata else '⚠️ saisie manuelle'}"
-        prix = st.number_input(px_label, min_value=1.0, value=float(px_def))
+        prix = st.number_input(px_label, min_value=1.0, value=float(px_def), key=f"prix_{titre}")
 
         # ── Fondamentaux ─────────────────────
         if est_banque:
@@ -747,13 +747,13 @@ with tab1:
 
         t1, t2, t3 = st.columns(3)
         with t1:
-            bb_sup = st.number_input("BB supérieure", min_value=1.0, value=float(mdata.get("bb_sup",1100.0)))
-            bb_inf = st.number_input("BB inférieure", min_value=1.0, value=float(mdata.get("bb_inf",900.0)))
+            bb_sup = st.number_input("BB supérieure", min_value=1.0, value=float(mdata.get("bb_sup",1100.0)), key=f"ti_bb_sup_{titre}")
+            bb_inf = st.number_input("BB inférieure", min_value=1.0, value=float(mdata.get("bb_inf",900.0)), key=f"ti_bb_inf_{titre}")
         with t2:
-            ema20  = st.number_input("EMA20", min_value=1.0, value=float(mdata.get("ema20",980.0)))
-            var_1s = st.number_input("Variation 1 semaine (%)", -30.0, 30.0, float(mdata.get("var_1s",0.0)))
+            ema20  = st.number_input("EMA20", min_value=1.0, value=float(mdata.get("ema20",980.0)), key=f"ti_ema20_{titre}")
+            var_1s = st.number_input("Variation 1 semaine (%)", -30.0, 30.0, float(mdata.get("var_1s",0.0)), key=f"ti_var1s_{titre}")
         with t3:
-            rsi = st.number_input("RSI (14)", 0.0, 100.0, float(mdata.get("rsi",50.0)))
+            rsi = st.number_input("RSI (14)", 0.0, 100.0, float(mdata.get("rsi",50.0)), key=f"ti_rsi_{titre}")
             st.markdown(f"<div class='box'><div class='lbl'>Seuils</div>Surachat : <b style='color:#f85149'>{RSI_HAUT}</b> · Survente : <b style='color:#3fb950'>{RSI_BAS}</b></div>",
             unsafe_allow_html=True)
 
