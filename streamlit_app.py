@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import pandas as pd
 import numpy as np
 import sqlite3
@@ -51,36 +51,6 @@ st.markdown("""
     .badge-manual { display: inline-block; background: #2d2500; color: #d29922; border: 1px solid #d29922; border-radius: 10px; padding: 1px 8px; font-size: 0.72em; font-weight: 700; margin-left: 6px; vertical-align: middle; }
     .form-divider { border: none; border-top: 1px solid #30363d; margin: 16px 0; }
     .saved-chip { display: inline-block; background: #1f3a5f; color: #79c0ff; border: 1px solid #79c0ff; border-radius: 12px; padding: 2px 10px; font-size: 0.75em; font-weight: 700; }
-    /* ── CARTE D'IDENTITÉ DU TITRE ── */
-    .ticker-card {
-    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
-    border: 1px solid #30363d;
-    border-left: 5px solid #79c0ff;
-    border-radius: 12px;
-    padding: 18px 22px;
-    margin: 10px 0 14px 0;
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    flex-wrap: wrap; }
-    .ticker-symbol {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 2em; font-weight: 700;
-    color: #79c0ff; letter-spacing: 2px; min-width: 90px; }
-    .ticker-name { font-size: 1.05em; font-weight: 600; color: #e6edf3; line-height: 1.3; }
-    .ticker-sector-badge {
-    display: inline-block; border-radius: 20px;
-    padding: 3px 12px; font-size: 0.78em; font-weight: 700; margin-top: 5px; }
-    .ticker-price-block { margin-left: auto; text-align: right; }
-    .ticker-price-value {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 1.9em; font-weight: 700; color: #e6edf3; }
-    .ticker-price-var-up   { color: #3fb950; font-size: 0.95em; font-weight: 600; }
-    .ticker-price-var-down { color: #f85149; font-size: 0.95em; font-weight: 600; }
-    .ticker-price-source   { color: #8b949e; font-size: 0.72em; margin-top: 2px; }
-    .sector-locked {
-    background: #0d1117; border: 1px dashed #30363d; border-radius: 6px;
-    padding: 8px 12px; font-size: 0.85em; color: #8b949e; margin-top: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,85 +62,11 @@ for key, val in [
     ("secteur_sel", "Télécommunications"),
     ("periode_sel", "Annuel complet (2024 ou 2025)"),
     ("annee_sel", "2025"),
+    ("marche_cache", {}),       # cache cours brvm.org
+    ("marche_cache_date", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = val
-
-# ==========================================================
-# RÉFÉRENTIEL TICKERS BRVM — ticker → (nom, secteur)
-# Source : richbourse.com/common/apprendre/liste-societes
-# Mise à jour : mars 2026
-# ==========================================================
-TICKERS_BRVM = {
-    # ── Télécommunications ──────────────────────────────────
-    "SNTS":  ("SONATEL SENEGAL",                        "Télécommunications"),
-    "ORAC":  ("ORANGE COTE D'IVOIRE",                   "Télécommunications"),
-    "ONTBF": ("ONATEL BURKINA FASO",                    "Télécommunications"),
-    # ── Services Financiers (Banques) ───────────────────────
-    "BOAB":  ("BANK OF AFRICA BENIN",                   "Services Financiers"),
-    "BOABF": ("BANK OF AFRICA BURKINA FASO",            "Services Financiers"),
-    "BOAC":  ("BANK OF AFRICA COTE D'IVOIRE",           "Services Financiers"),
-    "BOAM":  ("BANK OF AFRICA MALI",                    "Services Financiers"),
-    "BOAN":  ("BANK OF AFRICA NIGER",                   "Services Financiers"),
-    "BOAS":  ("BANK OF AFRICA SENEGAL",                 "Services Financiers"),
-    "BICB":  ("BICICI BENIN",                           "Services Financiers"),
-    "BICC":  ("BICI COTE D'IVOIRE",                     "Services Financiers"),
-    "CBIBF": ("CORIS BANK INTERNATIONAL BURKINA FASO",  "Services Financiers"),
-    "ECOC":  ("ECOBANK COTE D'IVOIRE",                  "Services Financiers"),
-    "ETIT":  ("ECOBANK TRANSNATIONAL (ETI) TOGO",       "Services Financiers"),
-    "NSBC":  ("NSIA BANQUE COTE D'IVOIRE",              "Services Financiers"),
-    "ORGT":  ("ORAGROUP TOGO",                          "Services Financiers"),
-    "SAFC":  ("ALIOS FINANCE COTE D'IVOIRE",            "Services Financiers"),
-    "SGBC":  ("SGB COTE D'IVOIRE",                      "Services Financiers"),
-    "SIBC":  ("SOCIETE IVOIRIENNE DE BANQUE",           "Services Financiers"),
-    # ── Services Publics ────────────────────────────────────
-    "CIEC":  ("CIE COTE D'IVOIRE",                      "Services Publics"),
-    "SDCC":  ("SODE COTE D'IVOIRE",                     "Services Publics"),
-    # ── Énergie ─────────────────────────────────────────────
-    "TTLC":  ("TOTAL ENERGIES COTE D'IVOIRE",           "Énergie"),
-    "TTLS":  ("TOTAL ENERGIES SENEGAL",                 "Énergie"),
-    "SHEC":  ("VIVO ENERGY COTE D'IVOIRE",              "Énergie"),
-    "SMBC":  ("SMB COTE D'IVOIRE",                      "Énergie"),
-    # ── Industriels ─────────────────────────────────────────
-    "FTSC":  ("FILTISAC COTE D'IVOIRE",                 "Industriels"),
-    "CABC":  ("SICABLE COTE D'IVOIRE",                  "Industriels"),
-    "STAC":  ("SETAO COTE D'IVOIRE",                    "Industriels"),
-    "SDSC":  ("AFRICA GLOBAL LOGISTICS CI",             "Industriels"),
-    "SEMC":  ("EVIOSYS PACKAGING SIEM CI",              "Industriels"),
-    "SIVC":  ("ERIUM CI",                               "Industriels"),
-    # ── Consommation de base ────────────────────────────────
-    "NTLC":  ("NESTLE COTE D'IVOIRE",                   "Consommation de base (hors Unilever)"),
-    "PALC":  ("PALM COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
-    "SPHC":  ("SAPH COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
-    "SICC":  ("SICOR COTE D'IVOIRE",                    "Consommation de base (hors Unilever)"),
-    "STBC":  ("SITAB COTE D'IVOIRE",                    "Consommation de base (hors Unilever)"),
-    "SOGC":  ("SOGB COTE D'IVOIRE",                     "Consommation de base (hors Unilever)"),
-    "SLBC":  ("SOLIBRA COTE D'IVOIRE",                  "Consommation de base (hors Unilever)"),
-    "SCRC":  ("SUCRIVOIRE COTE D'IVOIRE",               "Consommation de base (hors Unilever)"),
-    "UNLC":  ("UNILEVER COTE D'IVOIRE",                 "Consommation de base (hors Unilever)"),
-    # ── Consommation discrétionnaire ────────────────────────
-    "BNBC":  ("BERNABE COTE D'IVOIRE",                  "Consommation discrétionnaire"),
-    "CFAC":  ("CFAO MOTORS COTE D'IVOIRE",              "Consommation discrétionnaire"),
-    "LNBB":  ("LOTERIE NATIONALE DU BENIN",             "Consommation discrétionnaire"),
-    "NEIC":  ("NEI-CEDA COTE D'IVOIRE",                 "Consommation discrétionnaire"),
-    "ABJC":  ("SERVAIR ABIDJAN COTE D'IVOIRE",          "Consommation discrétionnaire"),
-    "PRSC":  ("TRACTAFRIC MOTORS COTE D'IVOIRE",        "Consommation discrétionnaire"),
-    "UNXC":  ("UNIWAX COTE D'IVOIRE",                   "Consommation discrétionnaire"),
-}
-
-def get_secteur_from_ticker(ticker: str) -> str | None:
-    """Retourne le secteur associé au ticker, ou None si inconnu."""
-    info = TICKERS_BRVM.get(ticker.upper().strip())
-    return info[1] if info else None
-
-def get_nom_from_ticker(ticker: str) -> str | None:
-    """Retourne le nom complet de la société."""
-    info = TICKERS_BRVM.get(ticker.upper().strip())
-    return info[0] if info else None
-
-TICKERS_LISTE = sorted(TICKERS_BRVM.keys())
-
-
 
 # ==========================================================
 # RÉFÉRENTIELS
@@ -330,111 +226,89 @@ except ImportError:
 import re as _re
 
 
-def _clean_num(v) -> float:
-    return float(str(v).replace(" ","").replace(",",".").replace("\xa0","").replace("%","").strip())
-
-
 @st.cache_data(ttl=1800, show_spinner=False)  # cache 30 min
 def fetch_cours_richbourse(ticker: str) -> dict:
     """
-    Scrape le cours actuel + variation depuis richbourse.com.
-    Essaie plusieurs URLs en cascade.
+    Scrape le cours actuel + variation depuis la page palmares de richbourse.com.
+    URL : richbourse.com/common/variation/index  (tableau HTML)
+    Retourne dict: {prix, variation_pct, volume} ou {}
     """
-    tk = ticker.upper().strip()
-    erreurs = []
-
-    # ── Tentative 1 : page individuelle du ticker ────────
-    for url in [
-        f"{RICHBOURSE_BASE}/common/variation/index/{tk}",
-        f"{RICHBOURSE_BASE}/common/mouvements/index/{tk}",
-    ]:
-        try:
-            resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
-            if resp.status_code == 200:
-                tables = pd.read_html(StringIO(resp.text), flavor="lxml")
-                for df in tables:
-                    df.columns = [str(c).strip().lower() for c in df.columns]
-                    col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close","cotation"])), None)
-                    col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
-                    if col_px:
-                        try:
-                            px = _clean_num(df[col_px].dropna().iloc[-1])
-                            vr = _clean_num(df[col_var].dropna().iloc[-1]) if col_var else 0.0
-                            if px > 0:
-                                return {"prix": px, "variation_pct": vr, "_source_url": url}
-                        except Exception as e:
-                            erreurs.append(f"parse {url}: {e}")
-        except Exception as e:
-            erreurs.append(f"req {url}: {e}")
-
-    # ── Tentative 2 : tableau global palmares ────────────
+    url = f"{RICHBOURSE_BASE}/common/variation/index"
     try:
-        url2 = f"{RICHBOURSE_BASE}/common/variation/index"
-        resp2 = requests.get(url2, headers=HEADERS_HTTP, timeout=15)
-        if resp2.status_code == 200:
-            tables2 = pd.read_html(StringIO(resp2.text), flavor="lxml")
-            for df in tables2:
-                df.columns = [str(c).strip().lower() for c in df.columns]
-                col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action","titre"])), None)
-                col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close"])), None)
-                col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","%"])), None)
-                if col_tk and col_px:
-                    row = df[df[col_tk].astype(str).str.upper().str.strip().str.contains(tk, na=False)]
-                    if not row.empty:
-                        px = _clean_num(row[col_px].values[0])
-                        vr = _clean_num(row[col_var].values[0]) if col_var else 0.0
-                        if px > 0:
-                            return {"prix": px, "variation_pct": vr, "_source_url": url2}
-    except Exception as e:
-        erreurs.append(f"palmares: {e}")
+        resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(StringIO(resp.text))
+        tk = ticker.upper()
+        for df in tables:
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            # Cherche la colonne ticker/code + cours
+            col_tk  = next((c for c in df.columns if any(k in c for k in ["ticker","code","valeur","action"])), None)
+            col_px  = next((c for c in df.columns if any(k in c for k in ["cours","clôture","dernier","close"])), None)
+            col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","évolution","%"])), None)
+            if col_tk and col_px:
+                row = df[df[col_tk].astype(str).str.upper().str.strip() == tk]
+                if not row.empty:
+                    def clean_num(v):
+                        return float(str(v).replace(" ","").replace(",",".").replace("\xa0","").replace("%","").strip())
+                    prix_val = clean_num(row[col_px].values[0])
+                    var_val  = clean_num(row[col_var].values[0]) if col_var else 0.0
+                    return {"prix": prix_val, "variation_pct": var_val}
+    except Exception:
+        pass
+    return {}
 
-    return {"_erreurs_cours": erreurs}
 
-
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)  # cache 10 min — indicateurs frais
 def fetch_tech_richbourse(ticker: str) -> dict:
     """
-    Scrape les indicateurs depuis richbourse.com/common/prevision-boursiere/synthese/TICKER
-    Retourne RSI numérique + positions qualitatives BB/EMA + tendance.
+    Scrape la page de prévision/synthèse richbourse.com qui expose
+    les indicateurs techniques déjà calculés en texte HTML.
+
+    URL : richbourse.com/common/prevision-boursiere/synthese/TICKER
+
+    Extrait :
+      - RSI 14 (valeur numérique)
+      - Position par rapport aux BB (au-dessus sup / en-dessous inf / dans les bandes)
+      - EMA20 (depuis historique si nécessaire)
+      - Variation 1 semaine
+      - Tendance + confiance
     """
     if not HAS_BS4:
-        return {"source_tech": "manuel", "_erreur_tech": "beautifulsoup4 non installé — pip install beautifulsoup4 lxml"}
+        return {"source_tech": "manuel", "_erreur": "beautifulsoup4 non installé"}
 
-    tk = ticker.upper().strip()
-    url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{tk}"
+    url = f"{RICHBOURSE_BASE}/common/prevision-boursiere/synthese/{ticker.upper()}"
     try:
         resp = requests.get(url, headers=HEADERS_HTTP, timeout=15)
         if resp.status_code != 200:
-            return {"source_tech": "manuel", "_erreur_tech": f"HTTP {resp.status_code} sur {url}"}
+            return {"source_tech": "manuel"}
 
         soup = BeautifulSoup(resp.text, "html.parser")
         texte = soup.get_text(" ", strip=True)
 
-        # Vérifier que la page contient bien des données (pas page 404 ou login)
-        if "rsi" not in texte.lower() and "bollinger" not in texte.lower():
-            return {"source_tech": "manuel", "_erreur_tech": f"Contenu inattendu sur {url} — ticker introuvable ou page vide"}
-
         result = {"source_tech": "auto_synthese"}
 
+        # ── RSI ─────────────────────────────────────────────
         m_rsi = _re.search(r"RSI\s*14\s*jours\s*est\s*de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_rsi:
             result["rsi"] = float(m_rsi.group(1).replace(",", "."))
 
-        tl = texte.lower()
-        if "au-dessus de la bande supérieure" in tl or "bande supérieure de bollinger" in tl:
+        # ── Bollinger — position qualitative ────────────────
+        if "au-dessus de la bande supérieure" in texte.lower() or "bande supérieure de bollinger" in texte.lower():
             result["bb_position"] = "above_sup"
-        elif "en-dessous de la bande inférieure" in tl or "bande inférieure de bollinger" in tl:
+        elif "en-dessous de la bande inférieure" in texte.lower() or "bande inférieure de bollinger" in texte.lower():
             result["bb_position"] = "below_inf"
         else:
             result["bb_position"] = "inside"
 
-        if "au-dessus de leur moyenne mobile à 20" in tl:
+        # ── EMA20 — position qualitative ────────────────────
+        if "au-dessus de leur moyenne mobile à 20" in texte.lower():
             result["ema20_position"] = "above"
-        elif "en-dessous de leur moyenne mobile à 20" in tl:
+        elif "en-dessous de leur moyenne mobile à 20" in texte.lower():
             result["ema20_position"] = "below"
         else:
             result["ema20_position"] = "unknown"
 
+        # ── Tendance ─────────────────────────────────────────
         m_tend = _re.search(r"Tendance\s*[àa]\s*court\s*terme\s*:\s*(\w+)", texte, _re.IGNORECASE)
         m_conf = _re.search(r"indice de confiance de\s*([\d,\.]+)\s*%", texte, _re.IGNORECASE)
         if m_tend:
@@ -445,7 +319,7 @@ def fetch_tech_richbourse(ticker: str) -> dict:
         return result
 
     except Exception as e:
-        return {"source_tech": "manuel", "_erreur_tech": str(e)}
+        return {"source_tech": "manuel", "_erreur": str(e)}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # cache 1h
@@ -704,7 +578,7 @@ if uploaded_json:
 # EN-TÊTE
 # ==========================================================
 st.title("⬡ Screener BRVM v2")
-st.caption("Cours automatiques (richbourse.com) • Indicateurs techniques calculés • Fondamentaux persistants (SQLite) • Graham + DCF")
+st.caption("Cours automatiques (brvm.org) • Indicateurs techniques calculés • Fondamentaux persistants (SQLite) • Graham + DCF")
 
 tab1, tab2, tab3, tab4 = st.tabs(["➕ Analyser un titre", "📊 Tableau de bord", "💾 Fondamentaux sauvegardés", "📖 Méthodologie"])
 
@@ -719,40 +593,10 @@ with tab1:
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        # Selectbox avec tous les tickers connus + option saisie libre
-        ticker_options = ["(Saisir manuellement)"] + TICKERS_LISTE
-        ticker_choice = st.selectbox(
-            "Ticker BRVM",
-            ticker_options,
-            key="ticker_select",
-            help="Sélectionnez un ticker connu ou choisissez 'Saisir manuellement'"
-        )
-        if ticker_choice == "(Saisir manuellement)":
-            titre = st.text_input("Ticker (saisie libre)", placeholder="ex: SNTS, SGBC…", key="titre_input_libre").upper().strip()
-        else:
-            titre = ticker_choice
-            nom_societe = get_nom_from_ticker(titre)
-            if nom_societe:
-                st.markdown(f"<div class='tooltip-text'>🏢 {nom_societe}</div>", unsafe_allow_html=True)
-
-    # Auto-détection du secteur
-    secteur_auto = get_secteur_from_ticker(titre) if titre else None
-
+        titre = st.text_input("Nom / Ticker", placeholder="ex: SNTS, SGBCI…", key="titre_input")
     with c2:
-        secteur_index = list(PER_SECTORIELS.keys()).index(secteur_auto) if secteur_auto and secteur_auto in PER_SECTORIELS else 0
-        secteur = st.selectbox(
-            "Secteur",
-            list(PER_SECTORIELS.keys()),
-            index=secteur_index,
-            key="secteur_input",
-            help="Détecté automatiquement selon le ticker. Modifiable si besoin."
-        )
-        if secteur_auto and secteur_auto == secteur:
-            st.markdown("<div class='tooltip-text'>✅ Secteur détecté automatiquement</div>", unsafe_allow_html=True)
-        elif titre and not secteur_auto:
-            st.markdown("<div class='tooltip-text'>⚠️ Ticker inconnu — secteur à sélectionner manuellement</div>", unsafe_allow_html=True)
+        secteur = st.selectbox("Secteur", list(PER_SECTORIELS.keys()), key="secteur_input")
         st.session_state.secteur_sel = secteur
-
     with c3:
         periode_donnees = st.selectbox(
             "Période disponible",
@@ -764,7 +608,6 @@ with tab1:
         annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
         st.session_state.annee_sel = annee_donnees
 
-
     est_banque   = (secteur == SECTEUR_BANCAIRE)
     per_cible    = PER_SECTORIELS[secteur]
     taux_suggere = TAUX_DCF_SECTEUR[secteur]
@@ -772,15 +615,21 @@ with tab1:
     # ── Récupération automatique des données de marché ─────
     marche_data   = {}
     source_tech   = "manuel"
+    fetch_status  = ""
 
-    if titre and len(titre) >= 3:
-        with st.spinner(f"⏳ Chargement richbourse.com pour **{titre}**…"):
+    if titre and len(titre) >= 2:
+        with st.spinner(f"⏳ Chargement des données de marché pour **{titre.upper()}**…"):
             marche_data = get_marche_data(titre.strip())
             source_tech = marche_data.get("source_tech", "manuel")
 
+        if "prix" in marche_data:
+            fetch_status = "auto_prix"
+        if source_tech == "auto":
+            fetch_status = "auto_full"
+
     # ── Fondamentaux sauvegardés ───────────────────────────
     fond_saved = None
-    if titre and len(titre) >= 3:
+    if titre and len(titre) >= 2:
         fond_saved = load_fondamentaux(titre.strip())
 
     # Indicateur de statut en temps réel
@@ -832,24 +681,6 @@ with tab1:
         Le formulaire est pré-rempli. Modifiez les champs mis à jour puis cliquez <b>Analyser</b>.
         </div>""", unsafe_allow_html=True)
 
-    # ── Bloc debug (affiché si données auto en échec) ──────
-    if titre and len(titre) >= 3 and not marche_data.get("prix") and (
-        marche_data.get("_erreurs_cours") or marche_data.get("_erreur_tech")
-    ):
-        with st.expander("🔧 Détails erreur fetch automatique (debug)", expanded=False):
-            st.markdown("**Erreurs cours :**")
-            for e in marche_data.get("_erreurs_cours", ["(aucune erreur remontée)"] ):
-                st.code(str(e))
-            if marche_data.get("_erreur_tech"):
-                st.markdown("**Erreur indicateurs techniques :**")
-                st.code(str(marche_data["_erreur_tech"]))
-            st.markdown("""
-            **Solutions possibles :**
-            - Vérifier que `requirements.txt` contient : `requests`, `beautifulsoup4`, `lxml`
-            - richbourse.com peut bloquer les requêtes sans cookie de session (voir note dans Méthodologie)
-            - Tester localement avec `python -c "import requests; r=requests.get('https://www.richbourse.com/common/variation/index'); print(r.status_code)"`
-            """)
-
     st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
 
     if periode_donnees != "Annuel complet (2024 ou 2025)":
@@ -883,7 +714,7 @@ with tab1:
             prix_label = f"💰 Prix actuel (FCFA) — {signe}{var_affich:.2f}% aujourd'hui ✅"
 
         prix = st.number_input(prix_label, min_value=1.0, value=float(prix_defaut),
-                               help="Cours chargé automatiquement depuis richbourse.com (ou saisi manuellement).")
+                               help="Cours chargé automatiquement depuis brvm.org (ou saisi manuellement).")
 
         # ── Section 2 : Fondamentaux ────────────────────────
         if est_banque:
@@ -1157,7 +988,7 @@ with tab1:
         # AFFICHAGE RÉSULTAT
         # ══════════════════════════════════════════════════════
         st.markdown("---")
-        badge_src = "<span class='badge-auto'>✅ AUTO richbourse</span>" if "prix" in marche_data else "<span class='badge-manual'>⚠️ Manuel</span>"
+        badge_src = "<span class='badge-auto'>✅ AUTO brvm.org</span>" if "prix" in marche_data else "<span class='badge-manual'>⚠️ Manuel</span>"
         badge_bq  = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;border-radius:10px;padding:1px 8px;font-size:0.72em;font-weight:700'>🏦 BANCAIRE</span>" if est_banque else ""
 
         st.markdown(
@@ -1360,35 +1191,11 @@ with tab2:
                 "Valeur intrinseque", "Prix cible", "Upside (%)",
                 "Score Final", "Filtre RSI", "Filtre BB", "Graham", "Signal"]
 
-        def color_score(val):
-            try:
-                v = float(val)
-                if v >= 0.60: return "background-color: #1b2d1b; color: #3fb950"
-                elif v >= 0.45: return "background-color: #2d2500; color: #e3b341"
-                else: return "background-color: #2d1b1b; color: #f85149"
-            except: return ""
-
-        def color_upside(val):
-            try:
-                v = float(val)
-                if v >= 20: return "background-color: #1b2d1b; color: #3fb950"
-                elif v >= 5: return "background-color: #2d2500; color: #e3b341"
-                else: return "background-color: #2d1b1b; color: #f85149"
-            except: return ""
-
-        def color_rsi(val):
-            try:
-                v = float(val)
-                if v > RSI_SURACHAT: return "background-color: #2d1b1b; color: #f85149"
-                elif v < RSI_SURVENTE: return "background-color: #1b2d1b; color: #3fb950"
-                else: return ""
-            except: return ""
-
         st.dataframe(
             df[cols].style
-                .applymap(color_score,  subset=["Score Final"])
-                .applymap(color_upside, subset=["Upside (%)"])
-                .applymap(color_rsi,    subset=["RSI"]),
+                .background_gradient(subset=["Score Final"], cmap="RdYlGn")
+                .background_gradient(subset=["Upside (%)"], cmap="RdYlGn")
+                .background_gradient(subset=["RSI"], cmap="RdYlGn_r"),
             use_container_width=True, height=420
         )
 
@@ -1523,25 +1330,18 @@ with tab4:
     └─────────────────────────────────────────────────────────────┘
     ```
 
-    ### Pourquoi richbourse.com comme source unique ?
+    ### Pourquoi richbourse.com plutôt que brvm.org ou sikafinance ?
 
     | Critère | richbourse.com | brvm.org | sikafinance.com |
     |---|---|---|---|
-    | HTML statique scrapable | ✅ | ❌ JS dynamique | ⚠️ partiel |
-    | RSI/BB/EMA déjà calculés | ✅ en texte HTML | ❌ | ❌ |
-    | Historique par ticker | ✅ `/historique/TICKER` | ❌ | ✅ mais login |
-    | Données J-1 fiables | ✅ | ✅ | ✅ |
-    | Mapping ticker → secteur | ✅ liste-societes | ❌ | ❌ |
+    | HTML statique (scrapable) | ✅ | ⚠️ partiel | ⚠️ partiel |
+    | Indicateurs déjà calculés | ✅ RSI/BB/EMA en texte | ❌ | ❌ |
+    | Historique structuré | ✅ `/historique/TICKER` | ⚠️ | ✅ download CSV |
+    | Utilisé par package R officiel | ✅ | ❌ | ❌ |
+    | API officielle | ✅ `/investisseur/api` | ⚠️ FIX protocol | ❌ |
 
-    **Note données J-1** : richbourse.com publie les cours de clôture de la veille.
-    Les indicateurs techniques (RSI, BB, EMA) sont donc calculés sur données J-1,
-    ce qui est parfaitement adapté à une stratégie de rotation hebdomadaire.
-
-    ### Référentiel tickers BRVM intégré
-
-    Le dictionnaire `TICKERS_BRVM` contient les ~47 sociétés cotées avec leur secteur.
-    La sélection du ticker **pré-remplit automatiquement** le secteur et le nom de la société.
-    Pour un nouveau ticker non répertorié, utiliser l'option **Saisir manuellement**.
+    richbourse.com est la seule source à exposer le RSI, la position des BB et la tendance
+    **directement en texte HTML** sur une page dédiée par ticker — pas besoin de recalculer.
 
     ### Installation des dépendances
 
