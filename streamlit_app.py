@@ -429,65 +429,60 @@ def fetch_tech_synthese(ticker: str) -> dict:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
+def fetch_historique(ticker: str, nb: int = 120):
 
     tk = ticker.upper()
     url = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "fr-FR,fr;q=0.9",
-        "Referer": "https://www.richbourse.com/"
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.richbourse.com/",
+        "Accept": "text/html,application/xhtml+xml"
     }
 
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
-        if resp.status_code != 200:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
             return pd.DataFrame()
 
-        tables = pd.read_html(StringIO(resp.text))
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "lxml")
 
-        if not tables:
+        table = soup.find("table")
+        if table is None:
             return pd.DataFrame()
 
-        df = tables[0].copy()
-        df.columns = [str(c).strip().lower() for c in df.columns]
+        rows = table.find_all("tr")
+        data = []
 
-        # Identification colonnes
-        col_date = next((c for c in df.columns if "date" in c or "séance" in c), None)
-        col_close = next((c for c in df.columns if "cours" in c or "clôture" in c), None)
+        for row in rows[1:]:
+            cols = row.find_all("td")
+            if len(cols) >= 2:
+                date = cols[0].get_text(strip=True)
+                close = cols[1].get_text(strip=True)
+                data.append([date, close])
 
-        if not col_date or not col_close:
+        if not data:
             return pd.DataFrame()
 
-        df = df[[col_date, col_close]].copy()
-        df.columns = ["date", "close"]
+        df = pd.DataFrame(data, columns=["date", "close"])
 
         df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
-
         df["close"] = (
             df["close"]
-            .astype(str)
             .str.replace("\xa0", "", regex=False)
-            .str.replace(" ", "", regex=False)
             .str.replace(" ", "", regex=False)
             .str.replace(",", ".", regex=False)
         )
 
         df["close"] = pd.to_numeric(df["close"], errors="coerce")
 
-        df = df.dropna()
-        df = df[df["close"] > 0]
-        df = df.drop_duplicates("date")
-        df = df.sort_values("date")
-
-        if len(df) < 20:
-            return pd.DataFrame()
+        df = df.dropna().sort_values("date")
 
         return df.tail(nb).reset_index(drop=True)
 
     except Exception as e:
-        print("Erreur historique:", e)
+        st.write("Erreur fetch:", e)
         return pd.DataFrame()
 
 
