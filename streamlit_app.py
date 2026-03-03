@@ -433,66 +433,98 @@ def fetch_historique(ticker, nb=120):
     return pd.DataFrame()
 
 
+
 def calc_indicateurs(df):
-    """RSI14 (Wilder), EMA20, Bollinger(20,2), variation 1 semaine."""
+    """Calcule RSI(14), BB(20,2), EMA(20) en Python pur depuis l historique.
+    Utilise en complement de fetch_tech_synthese pour les valeurs numeriques BB.
+    """
     if df.empty or len(df) < 14:
         return {}
-    c = df["close"].values.astype(float)
-    n = len(c)
-    k, ema = 2/21, [c[0]]
+
+    close = df["close"].values.astype(float)
+    n = len(close)
+
+    # EMA20
+    k = 2 / 21
+    ema = [close[0]]
     for i in range(1, n):
-        ema.append(c[i]*k + ema[-1]*(1-k))
-    d  = np.diff(c)
-    g  = np.where(d > 0, d, 0.)
-    lo = np.where(d < 0, -d, 0.)
-    ag, al = np.mean(g[:14]), np.mean(lo[:14])
-    for i in range(14, len(g)):
-        ag = (ag*13 + g[i]) / 14
-        al = (al*13 + lo[i]) / 14
-    rsi    = 100 - 100/(1 + ag/al) if al > 0 else 100.0
-    win    = c[-20:] if n >= 20 else c
-    bb_mid = np.mean(win)
-    bb_std = np.std(win, ddof=1)
+        ema.append(close[i] * k + ema[-1] * (1 - k))
+    ema20_val = ema[-1]
+
+    # RSI14
+    deltas = np.diff(close)
+    gains  = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    if len(gains) >= 14:
+        ag, al = np.mean(gains[:14]), np.mean(losses[:14])
+        for i in range(14, len(gains)):
+            ag = (ag * 13 + gains[i]) / 14
+            al = (al * 13 + losses[i]) / 14
+        rs = ag / al if al > 0 else 100
+        rsi_val = 100 - (100 / (1 + rs))
+    else:
+        rsi_val = 50.0
+
+    # BB(20,2)
+    if n >= 20:
+        win    = close[-20:]
+        bb_mid = np.mean(win)
+        bb_std = np.std(win, ddof=1)
+        bb_sup = bb_mid + 2 * bb_std
+        bb_inf = bb_mid - 2 * bb_std
+    else:
+        bb_mid = close[-1]; bb_sup = close[-1] * 1.05; bb_inf = close[-1] * 0.95
+
+    var_1s = ((close[-1] / close[-6]) - 1) * 100 if n >= 6 else 0.0
+
     return {
-        "rsi":    round(rsi, 1),
-        "ema20":  round(ema[-1], 0),
-        "bb_sup": round(bb_mid + 2*bb_std, 0),
-        "bb_inf": round(bb_mid - 2*bb_std, 0),
-        "var_1s": round(((c[-1]/c[-6])-1)*100, 2) if n >= 6 else 0.0,
-        "_source_tech": "historique_calc",
+        "rsi":    round(rsi_val, 1),
+        "ema20":  round(ema20_val, 0),
+        "bb_sup": round(bb_sup, 0),
+        "bb_inf": round(bb_inf, 0),
+        "bb_mid": round(bb_mid, 0),
+        "var_1s": round(var_1s, 2),
+        "nb_pts": n,
     }
 
 
 def get_marche(ticker):
     """
-    Agrege cours + indicateurs techniques.
-    Fusion : BB/EMA numeriques (calcul local) + RSI precis (richbourse).
+    Pipeline de collecte donnees :
+      1. Cours actuel  <- fetch_cours()
+      2. Indicateurs   <- fetch_tech_synthese() : RSI numerique + positions BB/EMA
+      3. Valeurs num.  <- fetch_historique() + calc_indicateurs()
+                          BB sup/inf en FCFA, EMA20, var_1s
+    RSI synthese a priorite sur RSI calcule (plus precis).
     """
-    data = fetch_cours(ticker)
+    tk = ticker.upper().strip()
+    result = {}
 
-    # Base : calcul local depuis historique (BB/EMA valeurs exactes)
-    df_h = fetch_historique(ticker)
-    if not df_h.empty:
-        data.update(calc_indicateurs(df_h))
+    # 1. Cours du jour
+    result.update(fetch_cours(tk))
 
-    # RSI precis depuis richbourse synthese
-    tech_rb = fetch_tech_synthese(ticker)
-    if tech_rb:
-        if "rsi" in tech_rb:
-            data["rsi"] = tech_rb["rsi"]   # RSI richbourse > RSI calcule
-        for k in ("bb_position", "ema20_position", "tendance", "confiance"):
-            if k in tech_rb:
-                data[k] = tech_rb[k]
-        data["_source_tech"] = "richbourse+historique" if not df_h.empty else "richbourse"
+    # 2. Indicateurs : RSI numerique, positions BB/EMA, tendance
+    result.update(fetch_tech_synthese(tk))
 
-    # Fallback sikafinance si historique ET richbourse ont echoue
-    elif df_h.empty:
-        tech_sk = fetch_tech_sika(ticker)
+    # 3. Historique -> valeurs numeriques BB/EMA/var_1s
+    df_hist = fetch_historique(tk)
+    if not df_hist.empty:
+        indics = calc_indicateurs(df_hist)
+        for k_ind, v_ind in indics.items():
+            if k_ind == "rsi" and "rsi" in result:
+                continue  # priorite RSI synthese richbourse sur RSI calcule
+            result[k_ind] = v_ind
+        result["_source_tech"] = "richbourse+historique"
+    elif "rsi" in result:
+        result["_source_tech"] = "richbourse_only"
+    else:
+        # Fallback sikafinance si tout echoue
+        tech_sk = fetch_tech_sika(tk)
         if tech_sk:
-            data.update({k: v for k, v in tech_sk.items() if k not in data})
-            data["_source_tech"] = "sikafinance"
+            result.update({k: v for k, v in tech_sk.items() if k not in result})
+            result["_source_tech"] = "sikafinance"
 
-    return data
+    return result
 
 
 # ─────────────────────────────────────────────
