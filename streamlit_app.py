@@ -908,8 +908,8 @@ with tab1:
     # CALCULS & AFFICHAGE RÉSULTATS
     # ─────────────────────────────────────────────────────────────
     if submitted and titre:
-        if any(a["Titre"] == titre.upper() for a in st.session_state.screener):
-            st.error(f"'{titre.upper()}' est déjà dans le screener."); st.stop()
+        # Écraser l'entrée existante si le ticker est déjà dans le screener
+        st.session_state.screener = [a for a in st.session_state.screener if a["Titre"] != titre.upper()]
 
         # Extrapolation
         r_an, meth, conf = extrapoler(resultat_saisi, periode, secteur)
@@ -1055,11 +1055,12 @@ with tab1:
         r1, r2, r3, r4, r5 = st.columns(5)
 
         def ratio_box(label, value, sub=""):
-            return f"""<div class="ratio-item">
-            <div class="ratio-label">{label}</div>
-            <div class="ratio-value">{value}</div>
-            {"<div class='ratio-sub'>"+sub+"</div>" if sub else ""}
-            </div>"""
+            sub_html = f"<div class='ratio-sub'>{sub}</div>" if sub else ""
+            return (f"<div class='ratio-item'>"
+                    f"<div class='ratio-label'>{label}</div>"
+                    f"<div class='ratio-value'>{value}</div>"
+                    f"{sub_html}"
+                    f"</div>")
 
         with r1:
             st.markdown(ratio_box("BPA", f"{bpa:,.1f} F") + ratio_box("PER", f"{per:.1f}×", f"cible {PER_SECTORIELS[secteur]:.1f}×"), unsafe_allow_html=True)
@@ -1095,6 +1096,8 @@ with tab1:
         </div>""", unsafe_allow_html=True)
 
         # ── Ajout screener ────────────────────────────────────
+        was_update = any(a["Titre"] == titre.upper() for a in st.session_state.screener)
+        # (déjà retiré plus haut, on ajoute la nouvelle entrée)
         st.session_state.screener.append({
             "Titre": titre.upper(), "Secteur": secteur,
             "Bancaire": "✅" if est_banque else "—",
@@ -1111,11 +1114,77 @@ with tab1:
             "Value": round(v_score, 3), "Quality": round(q_score, 3),
             "Momentum": round(m_score, 3), "Score": round(score, 3), "Signal": sig,
         })
-        st.success(f"✅ {titre.upper()} ajouté au screener.")
+        st.success(f"🔄 {titre.upper()} mis à jour dans le screener." if was_update else f"✅ {titre.upper()} ajouté au screener.")
 
 # ══════════════════════════════════════════════════════════════════
 # TAB 2 — DASHBOARD
 # ══════════════════════════════════════════════════════════════════
+
+# ── Helpers Kanban ────────────────────────────────────────────────
+def _signal_bucket(sig):
+    """Classe un signal dans l'un des 3 seaux visuels."""
+    if "FORT ACHAT" in sig or sig == "🔵 ACHAT":
+        return "achat"
+    if "SURVEILLER" in sig or "ALLÉGER" in sig or "HORS MARGE" in sig:
+        return "surveiller"
+    return "eviter"   # SORTIR, BLOQUÉ, SURÉVALUÉ
+
+KANBAN_CFG = {
+    "achat":      {"label": "ACHETER",    "icon": "↑", "border": "#3fb950", "bg": "#0a1f0e", "head_bg": "#0d2912", "count_bg": "#1b3d1f"},
+    "surveiller": {"label": "SURVEILLER", "icon": "◎", "border": "#d29922", "bg": "#1a1400", "head_bg": "#221b00", "count_bg": "#3d3000"},
+    "eviter":     {"label": "ÉVITER",     "icon": "↓", "border": "#f85149", "bg": "#1f0d0d", "head_bg": "#2d1212", "count_bg": "#4d1f1f"},
+}
+
+def _kanban_card(row, bucket):
+    """Génère le HTML d'une carte Kanban."""
+    cfg      = KANBAN_CFG[bucket]
+    sig      = row["Signal"]
+    sig_col  = SIGNAL_COLORS.get(sig, "#8b949e")
+    upside   = row["Upside%"]
+    up_col   = "#3fb950" if upside > 15 else ("#d29922" if upside > 0 else "#f85149")
+    score    = row["Score"]
+    sc_w     = int(min(max(score, 0), 1) * 100)
+    sc_col   = "#3fb950" if score >= .60 else ("#d29922" if score >= .40 else "#f85149")
+    rsi_col  = "#f85149" if row["RSI"] > RSI_HAUT else ("#3fb950" if row["RSI"] < RSI_BAS else "#8b949e")
+
+    return f"""
+    <div style="background:{cfg['bg']};border:1px solid {cfg['border']}22;border-left:3px solid {cfg['border']};
+                border-radius:10px;padding:12px 14px;margin-bottom:10px">
+      <!-- Ticker + signal -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+        <div>
+          <span style="font-family:'Space Mono',monospace;font-weight:700;font-size:1.05em;color:#e6edf3">{row['Titre']}</span><br>
+          <span style="font-size:.72em;color:#8b949e">{row['Secteur']}</span>
+        </div>
+        <span style="font-family:'Space Mono',monospace;font-size:.78em;font-weight:700;color:{sig_col};
+                     background:{sig_col}18;border:1px solid {sig_col}44;border-radius:20px;
+                     padding:2px 10px;white-space:nowrap">{sig}</span>
+      </div>
+      <!-- Métriques clés -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+        <div style="background:#0d1117;border-radius:6px;padding:5px 8px;text-align:center">
+          <div style="font-size:.62em;color:#8b949e;text-transform:uppercase;letter-spacing:.5px">Prix</div>
+          <div style="font-family:'Space Mono',monospace;font-size:.9em;font-weight:700;color:#e6edf3">{row['Prix']:,.0f}</div>
+        </div>
+        <div style="background:#0d1117;border-radius:6px;padding:5px 8px;text-align:center">
+          <div style="font-size:.62em;color:#8b949e;text-transform:uppercase;letter-spacing:.5px">Upside</div>
+          <div style="font-family:'Space Mono',monospace;font-size:.9em;font-weight:700;color:{up_col}">{upside:+.1f}%</div>
+        </div>
+        <div style="background:#0d1117;border-radius:6px;padding:5px 8px;text-align:center">
+          <div style="font-size:.62em;color:#8b949e;text-transform:uppercase;letter-spacing:.5px">RSI</div>
+          <div style="font-family:'Space Mono',monospace;font-size:.9em;font-weight:700;color:{rsi_col}">{row['RSI']:.0f}</div>
+        </div>
+      </div>
+      <!-- Barre de score -->
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="font-size:.65em;color:#8b949e;white-space:nowrap;font-family:'Space Mono',monospace">Score</div>
+        <div style="flex:1;background:#1e2633;border-radius:3px;height:4px;overflow:hidden">
+          <div style="background:{sc_col};width:{sc_w}%;height:100%;border-radius:3px"></div>
+        </div>
+        <div style="font-size:.65em;font-family:'Space Mono',monospace;color:{sc_col};white-space:nowrap">{score:.2f}</div>
+      </div>
+    </div>"""
+
 with tab2:
     if not st.session_state.screener:
         st.markdown("""
@@ -1129,81 +1198,98 @@ with tab2:
 
         # ── KPIs ────────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
-        nb_achat   = len(df[df["Signal"].str.contains("ACHAT", na=False)])
-        nb_bloque  = len(df[df["Signal"].str.startswith("🔴", na=False)])
-        nb_auto    = len(df[df["Cours auto"] == "✅"])
+        nb_achat  = len(df[df["Signal"].str.contains("ACHAT", na=False)])
+        nb_watch  = len(df[df["Signal"].str.contains("SURVEILLER|ALLÉGER|HORS MARGE", na=False)])
+        nb_eviter = len(df[df["Signal"].str.startswith("🔴", na=False)])
+        nb_auto   = len(df[df["Cours auto"] == "✅"])
 
-        for col, val, label, icon in [
-            (k1, len(df),      "Titres",         "⬡"),
-            (k2, nb_achat,     "Signaux ACHAT",  "🟢"),
-            (k3, nb_bloque,    "Bloqués",        "🔴"),
-            (k4, nb_auto,      "Cours auto",     "✅"),
+        for col, val, label, color in [
+            (k1, len(df),    "TOTAL",      "#8b949e"),
+            (k2, nb_achat,   "ACHETER",    "#3fb950"),
+            (k3, nb_watch,   "SURVEILLER", "#d29922"),
+            (k4, nb_eviter,  "ÉVITER",     "#f85149"),
         ]:
             with col:
                 st.markdown(f"""
-                <div class="card" style="text-align:center;padding:16px">
-                    <div style="font-size:1.6em;font-family:'Space Mono',monospace;font-weight:700;color:#e6edf3">{val}</div>
-                    <div style="font-size:.75em;color:#8b949e;text-transform:uppercase;letter-spacing:.8px;margin-top:2px">{icon} {label}</div>
+                <div style="background:#0d1117;border:1px solid {color}44;border-top:3px solid {color};
+                            border-radius:10px;padding:14px;text-align:center">
+                  <div style="font-size:2em;font-family:'Space Mono',monospace;font-weight:700;color:{color}">{val}</div>
+                  <div style="font-size:.7em;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-top:2px">{label}</div>
                 </div>""", unsafe_allow_html=True)
 
-        # ── Tableau ─────────────────────────────────────────────
-        def _cs(v):
-            try:
-                v = float(v)
-                if v >= .60: return "background-color:#0d1f12;color:#3fb950"
-                if v >= .45: return "background-color:#1a1400;color:#e3b341"
-                return "background-color:#1f0d0d;color:#f85149"
-            except: return ""
+        st.markdown("<br>", unsafe_allow_html=True)
 
-        def _cu(v):
-            try:
-                v = float(v)
-                if v >= 20: return "background-color:#0d1f12;color:#3fb950"
-                if v >= 5:  return "background-color:#1a1400;color:#e3b341"
-                return "background-color:#1f0d0d;color:#f85149"
-            except: return ""
-
-        cols_show = ["Titre", "Secteur", "Cours auto", "Prix", "PER", "P/B", "ROE%",
-                     "RSI", "BB%", "vs EMA%", "VI", "Cible", "Upside%", "Score", "Signal"]
-        st.dataframe(
-            df[cols_show].style
-                .applymap(_cs, subset=["Score"])
-                .applymap(_cu, subset=["Upside%"]),
-            use_container_width=True, height=420)
-
-        # ── Cartes récap ─────────────────────────────────────
-        st.markdown("---")
+        # ── Vue Kanban ───────────────────────────────────────────
+        buckets = {"achat": [], "surveiller": [], "eviter": []}
         for _, row in df.iterrows():
-            sig = row["Signal"]
-            col = SIGNAL_COLORS.get(sig, "#8b949e")
-            rsi_c = "#f85149" if row["RSI"] > RSI_HAUT else ("#3fb950" if row["RSI"] < RSI_BAS else "#8b949e")
-            st.markdown(f"""
-            <div class="card" style="border-left:3px solid {col};padding:14px 20px">
-              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-                <div>
-                  <span style="font-family:'Space Mono',monospace;font-weight:700;font-size:1.05em;color:#e6edf3">{row['Titre']}</span>
-                  <span style="color:#8b949e;margin-left:10px;font-size:.85em">{row['Secteur']} · {row['Période']}</span><br>
-                  <span class="pill">RSI <span style="color:{rsi_c}">{row['RSI']}</span></span>
-                  <span class="pill">BB {row['BB%']:.0f}%</span>
-                  <span class="pill">EMA {row['vs EMA%']:+.1f}%</span>
-                  <span class="pill">PER {row['PER']}</span>
-                </div>
-                <div style="text-align:right">
-                  <div style="color:{col};font-family:'Space Mono',monospace;font-weight:700;font-size:1.05em">{sig}</div>
-                  <div style="font-size:.75em;color:#8b949e;font-family:'Space Mono',monospace;margin-top:3px">
-                    Score <b style="color:#e6edf3">{row['Score']}</b> · Upside <b style="color:#e6edf3">{row['Upside%']}%</b>
-                  </div>
-                </div>
-              </div>
-            </div>""", unsafe_allow_html=True)
+            buckets[_signal_bucket(row["Signal"])].append(row)
 
-        # ── Export ───────────────────────────────────────────
+        col_a, col_s, col_e = st.columns(3)
+
+        for col_widget, bucket_key in [(col_a, "achat"), (col_s, "surveiller"), (col_e, "eviter")]:
+            cfg   = KANBAN_CFG[bucket_key]
+            items = buckets[bucket_key]
+            with col_widget:
+                # En-tête colonne
+                st.markdown(f"""
+                <div style="background:{cfg['head_bg']};border:1px solid {cfg['border']}33;
+                            border-radius:10px 10px 0 0;padding:10px 14px;
+                            display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+                  <span style="font-family:'Space Mono',monospace;font-weight:700;font-size:.9em;
+                               color:{cfg['border']};letter-spacing:1px">{cfg['icon']} {cfg['label']}</span>
+                  <span style="background:{cfg['count_bg']};color:{cfg['border']};border-radius:20px;
+                               padding:2px 10px;font-family:'Space Mono',monospace;font-size:.8em;font-weight:700">{len(items)}</span>
+                </div>""", unsafe_allow_html=True)
+
+                if not items:
+                    st.markdown(f"""
+                    <div style="background:{cfg['bg']};border:1px solid {cfg['border']}22;border-radius:0 0 10px 10px;
+                                padding:24px;text-align:center;color:#8b949e;font-size:.82em">
+                        Aucun titre
+                    </div>""", unsafe_allow_html=True)
+                else:
+                    html_cards = "".join(_kanban_card(r, bucket_key) for r in items)
+                    st.markdown(f"""
+                    <div style="background:{cfg['bg']}88;border:1px solid {cfg['border']}22;
+                                border-top:none;border-radius:0 0 10px 10px;padding:10px 8px 4px">
+                        {html_cards}
+                    </div>""", unsafe_allow_html=True)
+
+        # ── Tableau détaillé ─────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📋 Tableau détaillé", expanded=False):
+            def _cs(v):
+                try:
+                    v = float(v)
+                    if v >= .60: return "background-color:#0d1f12;color:#3fb950"
+                    if v >= .45: return "background-color:#1a1400;color:#e3b341"
+                    return "background-color:#1f0d0d;color:#f85149"
+                except: return ""
+            def _cu(v):
+                try:
+                    v = float(v)
+                    if v >= 20: return "background-color:#0d1f12;color:#3fb950"
+                    if v >= 5:  return "background-color:#1a1400;color:#e3b341"
+                    return "background-color:#1f0d0d;color:#f85149"
+                except: return ""
+
+            cols_show = ["Titre", "Secteur", "Prix", "PER", "P/B", "ROE%",
+                         "RSI", "BB%", "vs EMA%", "VI", "Cible", "Upside%", "Score", "Signal"]
+            st.dataframe(
+                df[cols_show].style
+                    .applymap(_cs, subset=["Score"])
+                    .applymap(_cu, subset=["Upside%"]),
+                use_container_width=True, height=420)
+
+        # ── Export ─────────────────────────────────────────────
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
             df.to_excel(w, index=False, sheet_name="BRVM")
         st.download_button("⬇️ Exporter Excel", buf.getvalue(), "screener_brvm.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True)
+
+
 
 # ══════════════════════════════════════════════════════════════════
 # TAB 3 — FONDAMENTAUX SAUVEGARDÉS
