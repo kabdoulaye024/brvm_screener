@@ -1,905 +1,1217 @@
+"""
+Screener BRVM v5.0
+Cours      : richbourse → brvm.org → sikafinance
+Indicateurs: richbourse historique → calc BB(20,2) + EMA(20) + RSI(14)
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO
+import sqlite3
+import json
+import requests
+import re as _re
+from io import BytesIO, StringIO
+from datetime import datetime
+import warnings
+warnings.filterwarnings("ignore")
 
-# ==========================================================
-# CONFIGURATION
-# ==========================================================
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ══════════════════════════════════════════════════════════════════
+# CONFIG & STYLES
+# ══════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Screener BRVM", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-    h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
-    .stApp { background-color: #0d1117; color: #e6edf3; }
-    div[data-testid="stSidebar"] { background-color: #161b22; border-right: 1px solid #30363d; }
-    .card {
-        background: #161b22; border: 1px solid #30363d;
-        border-radius: 10px; padding: 16px 20px; margin: 8px 0;
-    }
-    .card-green  { border-left: 4px solid #3fb950; }
-    .card-blue   { border-left: 4px solid #79c0ff; }
-    .card-yellow { border-left: 4px solid #d29922; }
-    .card-red    { border-left: 4px solid #f85149; }
-    .alert-red {
-        background: #2d1b1b; border: 1px solid #f85149; border-radius: 8px;
-        padding: 13px 17px; margin: 8px 0; color: #ffa198; font-weight: 600;
-    }
-    .alert-yellow {
-        background: #2d2500; border: 1px solid #d29922; border-radius: 8px;
-        padding: 13px 17px; margin: 8px 0; color: #e3b341; font-weight: 600;
-    }
-    .alert-green {
-        background: #1b2d1b; border: 1px solid #3fb950; border-radius: 8px;
-        padding: 13px 17px; margin: 8px 0; color: #7ee787; font-weight: 600;
-    }
-    .alert-estimated {
-        background: #1a1f2e; border: 1px solid #79c0ff; border-radius: 8px;
-        padding: 12px 16px; margin: 8px 0; color: #a5d6ff;
-    }
-    .ratio-box {
-        background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-        padding: 10px 14px; margin: 4px 0;
-        font-family: 'IBM Plex Mono', monospace; font-size: 0.88em;
-    }
-    .filter-block {
-        background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-        padding: 14px 18px; margin: 6px 0;
-    }
-    .label-small { color: #8b949e; font-size: 0.78em; }
-    .stButton>button {
-        background: #238636; color: white; border: none;
-        border-radius: 6px; font-family: 'IBM Plex Mono', monospace; font-weight: 600;
-        width: 100%; padding: 10px;
-    }
-    .stButton>button:hover { background: #2ea043; }
-    .tooltip-text { color: #8b949e; font-size: 0.77em; font-style: italic; margin: -4px 0 6px 0; }
-    .section-header {
-        font-family: 'IBM Plex Mono', monospace; font-size: 0.8em;
-        color: #8b949e; text-transform: uppercase; letter-spacing: 2px;
-        border-bottom: 1px solid #30363d; padding-bottom: 6px; margin: 18px 0 10px 0;
-    }
-    .badge-estimated {
-        display: inline-block; background: #1f3a5f; color: #79c0ff;
-        border: 1px solid #79c0ff; border-radius: 10px;
-        padding: 1px 8px; font-size: 0.72em; font-weight: 700;
-        margin-left: 6px; vertical-align: middle;
-    }
-    .badge-annuel {
-        display: inline-block; background: #1b2d1b; color: #3fb950;
-        border: 1px solid #3fb950; border-radius: 10px;
-        padding: 1px 8px; font-size: 0.72em; font-weight: 700;
-        margin-left: 6px; vertical-align: middle;
-    }
-    /* Séparateur de section dans le formulaire */
-    .form-divider {
-        border: none; border-top: 1px solid #30363d; margin: 16px 0;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+/* Base */
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.stApp { background: #070b0f; color: #dde3ea; }
+
+/* Sidebar */
+div[data-testid="stSidebar"] {
+    background: #0d1117;
+    border-right: 1px solid #1e2633;
+}
+div[data-testid="stSidebar"] .stSlider > div > div { background: #1e2633; }
+
+/* Titres */
+h1, h2, h3, .mono { font-family: 'Space Mono', monospace; }
+h1 { font-size: 1.6em !important; letter-spacing: -0.5px; color: #e6edf3; }
+h3 { font-size: 1.0em !important; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-top: 1.4em !important; }
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] { background: #0d1117; gap: 4px; border-bottom: 1px solid #1e2633; }
+.stTabs [data-baseweb="tab"] { background: transparent; border-radius: 6px 6px 0 0; color: #8b949e; font-family: 'Space Mono', monospace; font-size: .82em; padding: 8px 18px; border: none; }
+.stTabs [aria-selected="true"] { background: #161b22 !important; color: #e6edf3 !important; border-bottom: 2px solid #238636 !important; }
+
+/* Cards */
+.card {
+    background: #0d1117;
+    border: 1px solid #1e2633;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin: 10px 0;
+}
+.card-accent { border-left: 3px solid #238636; }
+
+/* Metric pills */
+.pill {
+    display: inline-block;
+    background: #161b22;
+    border: 1px solid #1e2633;
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-size: .75em;
+    font-family: 'Space Mono', monospace;
+    margin: 2px 3px;
+    color: #8b949e;
+}
+.pill-green  { border-color: #238636; color: #3fb950; background: #0d1f12; }
+.pill-red    { border-color: #da3633; color: #f85149; background: #1f0d0d; }
+.pill-yellow { border-color: #9e6a03; color: #d29922; background: #1f1a0d; }
+.pill-blue   { border-color: #1f6feb; color: #79c0ff; background: #0d1627; }
+
+/* Status bar */
+.status-bar {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: #0d1117;
+    border: 1px solid #1e2633;
+    border-radius: 8px;
+    padding: 8px 14px;
+    margin: 8px 0;
+    font-family: 'Space Mono', monospace;
+    font-size: .75em;
+    color: #8b949e;
+}
+.status-item { display: flex; align-items: center; gap: 5px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot-green  { background: #3fb950; box-shadow: 0 0 5px #3fb950; }
+.dot-red    { background: #f85149; }
+.dot-yellow { background: #d29922; }
+
+/* Indicator boxes */
+.ind-box {
+    background: #0d1117;
+    border: 1px solid #1e2633;
+    border-radius: 10px;
+    padding: 14px 16px;
+    text-align: center;
+    transition: border-color .2s;
+}
+.ind-value { font-family: 'Space Mono', monospace; font-size: 1.8em; font-weight: 700; line-height: 1.1; }
+.ind-label { font-size: .7em; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+.ind-sub   { font-size: .72em; margin-top: 4px; }
+
+/* Alert banners */
+.banner {
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin: 6px 0;
+    font-size: .88em;
+    font-weight: 500;
+    border-left: 3px solid;
+}
+.banner-green  { background: #0d1f12; border-color: #3fb950; color: #7ee787; }
+.banner-yellow { background: #1a1400; border-color: #d29922; color: #e3b341; }
+.banner-red    { background: #1f0d0d; border-color: #f85149; color: #ffa198; }
+.banner-blue   { background: #0d1627; border-color: #79c0ff; color: #a5d6ff; }
+
+/* Signal card */
+.signal-card {
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-top: 16px;
+    border: 1px solid #1e2633;
+    background: #0d1117;
+}
+.signal-main { font-family: 'Space Mono', monospace; font-size: 1.8em; font-weight: 700; margin: 8px 0 4px; }
+.score-row { font-size: .78em; color: #8b949e; font-family: 'Space Mono', monospace; }
+
+/* Ratio grid */
+.ratio-item {
+    background: #0d1117;
+    border: 1px solid #1e2633;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 4px 0;
+}
+.ratio-label { font-size: .68em; color: #8b949e; text-transform: uppercase; letter-spacing: .8px; }
+.ratio-value { font-family: 'Space Mono', monospace; font-size: 1.1em; font-weight: 700; margin-top: 2px; }
+.ratio-sub   { font-size: .7em; color: #8b949e; }
+
+/* Separator */
+.sep { border: none; border-top: 1px solid #1e2633; margin: 16px 0; }
+
+/* Buttons */
+.stButton > button {
+    background: #238636 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-family: 'Space Mono', monospace !important;
+    font-size: .82em !important;
+    font-weight: 700 !important;
+    padding: 10px 20px !important;
+    transition: background .2s !important;
+    width: 100%;
+}
+.stButton > button:hover { background: #2ea043 !important; }
+
+/* Selectbox / inputs */
+.stSelectbox > div, .stNumberInput > div { font-family: 'DM Sans', sans-serif; }
+.stNumberInput input { font-family: 'Space Mono', monospace !important; }
+
+/* DataFrame */
+.stDataFrame { border: 1px solid #1e2633; border-radius: 10px; overflow: hidden; }
+
+/* Expander */
+.st-expander { border: 1px solid #1e2633 !important; border-radius: 10px !important; background: #0d1117 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================================
-# SESSION STATE
-# ==========================================================
-if "actions"         not in st.session_state: st.session_state.actions = []
-if "secteur_sel"     not in st.session_state: st.session_state.secteur_sel = "Télécommunications"
-if "periode_sel"     not in st.session_state: st.session_state.periode_sel = "Annuel complet (2024 ou 2025)"
-if "annee_sel"       not in st.session_state: st.session_state.annee_sel   = "2025"
-
-# ==========================================================
-# RÉFÉRENTIELS
-# ==========================================================
-PER_SECTORIELS = {
-    "Télécommunications":                   10.11,
-    "Consommation discrétionnaire":         72.48,
-    "Services Financiers":                  11.08,
-    "Consommation de base (hors Unilever)": 14.80,
-    "Industriels":                          22.23,
-    "Énergie":                              17.63,
-    "Services Publics":                     17.65,
-}
-PER_CAP_SCORE    = {s: min(p, 25) for s, p in PER_SECTORIELS.items()}
-SECTEUR_BANCAIRE = "Services Financiers"
-
-# Taux d'actualisation DCF suggérés par secteur
-TAUX_DCF_SECTEUR = {
-    "Télécommunications":                   0.11,
-    "Consommation discrétionnaire":         0.13,
-    "Services Financiers":                  0.11,
-    "Consommation de base (hors Unilever)": 0.12,
-    "Industriels":                          0.14,
-    "Énergie":                              0.13,
-    "Services Publics":                     0.11,
-}
-
-SAISONNALITE_S1 = {
-    "Télécommunications":                   0.50,
-    "Consommation discrétionnaire":         0.45,
-    "Services Financiers":                  0.48,  # banques UEMOA légèrement back-loaded (provisions Q4)
-    "Consommation de base (hors Unilever)": 0.48,
-    "Industriels":                          0.45,
-    "Énergie":                              0.52,
-    "Services Publics":                     0.50,
-}
-
-BENCH_BANQUE = {
-    "cout_risque_max":    0.03,
-    "cout_risque_cible":  0.01,
-    "credits_depots_min": 0.60,
-    "credits_depots_max": 1.00,
-    "credits_depots_opt": 0.80,
-    "roe_cible":          0.15,
-    "marge_nette_cible":  0.20,  # RN / PNB : banque efficace > 20%
-}
-
-COULEURS = {
-    "🟢 FORT ACHAT":                       "#3fb950",
-    "🔵 ACHAT":                            "#79c0ff",
-    "🟡 SURVEILLER":                       "#d29922",
-    "🟡 SURVEILLER (prix > cible Graham)": "#d29922",
-    "🟠 ALLÉGER":                          "#ffa657",
-    "🔴 SORTIR":                           "#f85149",
-    "🔴 HORS MARGE — Ne pas acheter":      "#f85149",
-    "🔴 BLOQUÉ — RSI surachat":            "#f85149",
-    "🔴 BLOQUÉ — Prix > BB supérieure":    "#f85149",
+# ══════════════════════════════════════════════════════════════════
+# RÉFÉRENTIEL BRVM
+# ══════════════════════════════════════════════════════════════════
+TICKERS_BRVM = {
+    "SNTS":  ("SONATEL SENEGAL",                         "Télécommunications"),
+    "ORAC":  ("ORANGE COTE D'IVOIRE",                    "Télécommunications"),
+    "ONTBF": ("ONATEL BURKINA FASO",                     "Télécommunications"),
+    "BOAB":  ("BANK OF AFRICA BENIN",                    "Services Financiers"),
+    "BOABF": ("BANK OF AFRICA BURKINA FASO",             "Services Financiers"),
+    "BOAC":  ("BANK OF AFRICA COTE D'IVOIRE",            "Services Financiers"),
+    "BOAM":  ("BANK OF AFRICA MALI",                     "Services Financiers"),
+    "BOAN":  ("BANK OF AFRICA NIGER",                    "Services Financiers"),
+    "BOAS":  ("BANK OF AFRICA SENEGAL",                  "Services Financiers"),
+    "BICB":  ("BICICI BENIN",                            "Services Financiers"),
+    "BICC":  ("BICI COTE D'IVOIRE",                      "Services Financiers"),
+    "CBIBF": ("CORIS BANK INTERNATIONAL BURKINA FASO",   "Services Financiers"),
+    "ECOC":  ("ECOBANK COTE D'IVOIRE",                   "Services Financiers"),
+    "ETIT":  ("ECOBANK TRANSNATIONAL (ETI) TOGO",        "Services Financiers"),
+    "NSBC":  ("NSIA BANQUE COTE D'IVOIRE",               "Services Financiers"),
+    "ORGT":  ("ORAGROUP TOGO",                           "Services Financiers"),
+    "SAFC":  ("ALIOS FINANCE COTE D'IVOIRE",             "Services Financiers"),
+    "SGBC":  ("SGB COTE D'IVOIRE",                       "Services Financiers"),
+    "SIBC":  ("SOCIETE IVOIRIENNE DE BANQUE",            "Services Financiers"),
+    "CIEC":  ("CIE COTE D'IVOIRE",                       "Services Publics"),
+    "SDCC":  ("SODE COTE D'IVOIRE",                      "Services Publics"),
+    "TTLC":  ("TOTAL ENERGIES COTE D'IVOIRE",            "Énergie"),
+    "TTLS":  ("TOTAL ENERGIES SENEGAL",                  "Énergie"),
+    "SHEC":  ("VIVO ENERGY COTE D'IVOIRE",               "Énergie"),
+    "SMBC":  ("SMB COTE D'IVOIRE",                       "Énergie"),
+    "FTSC":  ("FILTISAC COTE D'IVOIRE",                  "Industriels"),
+    "CABC":  ("SICABLE COTE D'IVOIRE",                   "Industriels"),
+    "STAC":  ("SETAO COTE D'IVOIRE",                     "Industriels"),
+    "SDSC":  ("AFRICA GLOBAL LOGISTICS CI",              "Industriels"),
+    "SEMC":  ("EVIOSYS PACKAGING SIEM CI",               "Industriels"),
+    "SIVC":  ("ERIUM CI",                                "Industriels"),
+    "NTLC":  ("NESTLE COTE D'IVOIRE",                    "Consommation de base"),
+    "PALC":  ("PALM COTE D'IVOIRE",                      "Consommation de base"),
+    "SPHC":  ("SAPH COTE D'IVOIRE",                      "Consommation de base"),
+    "SICC":  ("SICOR COTE D'IVOIRE",                     "Consommation de base"),
+    "STBC":  ("SITAB COTE D'IVOIRE",                     "Consommation de base"),
+    "SOGC":  ("SOGB COTE D'IVOIRE",                      "Consommation de base"),
+    "SLBC":  ("SOLIBRA COTE D'IVOIRE",                   "Consommation de base"),
+    "SCRC":  ("SUCRIVOIRE COTE D'IVOIRE",                "Consommation de base"),
+    "UNLC":  ("UNILEVER COTE D'IVOIRE",                  "Consommation de base"),
+    "BNBC":  ("BERNABE COTE D'IVOIRE",                   "Consommation discrétionnaire"),
+    "CFAC":  ("CFAO MOTORS COTE D'IVOIRE",               "Consommation discrétionnaire"),
+    "LNBB":  ("LOTERIE NATIONALE DU BENIN",              "Consommation discrétionnaire"),
+    "NEIC":  ("NEI-CEDA COTE D'IVOIRE",                  "Consommation discrétionnaire"),
+    "ABJC":  ("SERVAIR ABIDJAN COTE D'IVOIRE",           "Consommation discrétionnaire"),
+    "PRSC":  ("TRACTAFRIC MOTORS COTE D'IVOIRE",         "Consommation discrétionnaire"),
+    "UNXC":  ("UNIWAX COTE D'IVOIRE",                    "Consommation discrétionnaire"),
 }
 
-# ==========================================================
-# SIDEBAR
-# ==========================================================
-st.sidebar.markdown("## ⚙️ Paramètres")
+SECTEURS = [
+    "Télécommunications", "Consommation discrétionnaire",
+    "Services Financiers", "Consommation de base",
+    "Industriels", "Énergie", "Services Publics",
+]
+SECTEUR_EMOJI = {
+    "Télécommunications": "📡", "Services Financiers": "🏦",
+    "Consommation de base": "🛒", "Consommation discrétionnaire": "🛍️",
+    "Industriels": "⚙️", "Énergie": "⚡", "Services Publics": "🏛️",
+}
+PER_SECTORIELS  = {"Télécommunications": 10.11, "Consommation discrétionnaire": 72.48,
+                   "Services Financiers": 11.08, "Consommation de base": 14.80,
+                   "Industriels": 22.23, "Énergie": 17.63, "Services Publics": 17.65}
+TAUX_DCF        = {"Télécommunications": 0.11, "Consommation discrétionnaire": 0.13,
+                   "Services Financiers": 0.11, "Consommation de base": 0.12,
+                   "Industriels": 0.14, "Énergie": 0.13, "Services Publics": 0.11}
+SAISONNALITE_S1 = {"Télécommunications": 0.50, "Consommation discrétionnaire": 0.45,
+                   "Services Financiers": 0.48, "Consommation de base": 0.48,
+                   "Industriels": 0.45, "Énergie": 0.52, "Services Publics": 0.50}
 
-mode = st.sidebar.radio("Mode d'affichage", ["🟢 Mode Simple", "🔬 Mode Expert"])
-mode_simple = mode == "🟢 Mode Simple"
+SIGNAL_COLORS = {
+    "🟢 FORT ACHAT": "#3fb950", "🔵 ACHAT": "#79c0ff",
+    "🟡 SURVEILLER": "#d29922", "🟠 ALLÉGER": "#ffa657",
+    "🔴 SORTIR": "#f85149",     "🔴 BLOQUÉ RSI": "#f85149",
+    "🔴 BLOQUÉ BB": "#f85149",  "🔴 SURÉVALUÉ": "#f85149",
+    "🟡 HORS MARGE": "#d29922",
+}
 
-st.sidebar.markdown("---")
-if mode_simple:
-    W_VALUE, W_QUALITY, W_MOMENTUM = 0.35, 0.40, 0.25
-    st.sidebar.info("Mode Simple : les chiffres bruts suffisent. Ratios calculés automatiquement.")
-else:
-    st.sidebar.markdown("### Pondérations")
-    W_VALUE    = st.sidebar.slider("Value",    0.1, 0.6, 0.30, 0.05)
-    W_QUALITY  = st.sidebar.slider("Quality",  0.1, 0.6, 0.40, 0.05)
-    W_MOMENTUM = st.sidebar.slider("Momentum", 0.1, 0.6, 0.30, 0.05)
-    T = W_VALUE + W_QUALITY + W_MOMENTUM
-    W_VALUE /= T; W_QUALITY /= T; W_MOMENTUM /= T
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+}
+RICHBOURSE_BASE = "https://www.richbourse.com"
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔒 Discipline de prix (Graham)")
-MARGE_SECURITE = st.sidebar.slider("Marge de sécurité (%)", 5, 30, 20, 5) / 100
+# ══════════════════════════════════════════════════════════════════
+# SQLITE — FONDAMENTAUX
+# ══════════════════════════════════════════════════════════════════
+DB_PATH = "fondamentaux_brvm.db"
 
-if not mode_simple:
-    st.sidebar.markdown("### 📐 DCF")
-    taux_dcf_suggere = TAUX_DCF_SECTEUR.get(st.session_state.secteur_sel, 0.12)
-    st.sidebar.caption(f"Taux suggéré pour **{st.session_state.secteur_sel}** : {taux_dcf_suggere*100:.0f}%")
-    TAUX_ACTUA = st.sidebar.slider("Taux d'actualisation DCF (%)", 8, 20,
-                                   int(taux_dcf_suggere * 100), 1) / 100
-else:
-    TAUX_ACTUA = TAUX_DCF_SECTEUR.get(st.session_state.secteur_sel, 0.12)
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE IF NOT EXISTS fondamentaux (
+        ticker TEXT PRIMARY KEY, secteur TEXT, periode TEXT, annee TEXT,
+        est_banque INTEGER DEFAULT 0, nombre_actions REAL, dividende REAL,
+        bpa_prec REAL, capitaux_propres REAL, resultat REAL,
+        total_actif REAL, dettes_totales REAL, stabilite_bpa TEXT,
+        pnb REAL, resultat_b REAL, encours_credits REAL, depots_clientele REAL,
+        maj_at TEXT)""")
+    conn.commit()
+    return conn
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📡 Seuils techniques")
-RSI_SURACHAT = st.sidebar.slider("RSI — surachat", 60, 80, 70, 5)
-RSI_SURVENTE = st.sidebar.slider("RSI — survente", 20, 40, 30, 5)
+def save_fond(ticker, data):
+    data = {**data, "ticker": ticker.upper(), "maj_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    with db() as conn:
+        conn.execute(
+            f"INSERT OR REPLACE INTO fondamentaux ({','.join(data)}) VALUES ({','.join(['?']*len(data))})",
+            list(data.values()))
 
-st.sidebar.markdown("---")
-if st.sidebar.button("🗑️ Vider le screener"):
-    st.session_state.actions = []
-    st.rerun()
+def load_fond(ticker):
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT * FROM fondamentaux WHERE ticker=?", (ticker.upper(),)).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
 
-# ==========================================================
+def list_fonds():
+    try:
+        with db() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT ticker, secteur, maj_at FROM fondamentaux ORDER BY maj_at DESC").fetchall()]
+    except Exception:
+        return []
+
+def del_fond(ticker):
+    with db() as conn:
+        conn.execute("DELETE FROM fondamentaux WHERE ticker=?", (ticker.upper(),))
+
+# ══════════════════════════════════════════════════════════════════
 # HELPERS
-# ==========================================================
-def extrapoler_annuel(resultat, periode, secteur):
-    saison = SAISONNALITE_S1.get(secteur, 0.50)
-    if periode == "9 mois (T1+T2+T3)":
-        return (resultat / 3) * 4, f"9M × 4/3 ({resultat:.0f}M × 1.333)", "Élevée"
-    elif periode == "Semestriel (S1 — 6 mois)":
-        return resultat / saison, f"S1 ÷ {saison:.2f} (saisonnalité {secteur})", "Modérée"
-    else:
-        return resultat, "Données annuelles complètes", "Annuelle"
+# ══════════════════════════════════════════════════════════════════
+_NULS = {"", "-", "–", "—", "N/D", "N/A", "nd", "na", "nc", "n/c", "null", "none"}
 
-def badge_donnees(confiance):
-    if confiance == "Annuelle":
-        return "<span class='badge-annuel'>✅ Données annuelles</span>"
-    elif confiance == "Élevée":
-        return "<span class='badge-estimated'>⚠️ ESTIMÉ — 9M</span>"
-    else:
-        return "<span class='badge-estimated'>⚠️ ESTIMÉ — S1</span>"
+def to_float(v, default=None):
+    s = (str(v).replace(" ", "").replace("\u202f", "").replace("\u2009", "")
+         .replace("\xa0", "").replace(",", ".").replace("%", "").strip())
+    if s.lower() in _NULS:
+        return default
+    try:
+        return float(s)
+    except Exception:
+        return default
 
-def get_signal(score, upside_val, survalue_b, sous_marge_b, f_rsi, f_bb, var1s):
-    if f_rsi:        return "🔴 BLOQUÉ — RSI surachat"
-    if f_bb:         return "🔴 BLOQUÉ — Prix > BB supérieure"
-    if survalue_b:   return "🔴 HORS MARGE — Ne pas acheter"
-    if sous_marge_b: return "🟡 SURVEILLER (prix > cible Graham)"
-    if score >= 0.65 and upside_val > 25 and var1s >= -2: return "🟢 FORT ACHAT"
-    elif score >= 0.50 and upside_val > 15:                return "🔵 ACHAT"
-    elif score >= 0.40 and upside_val > 5:                 return "🟡 SURVEILLER"
-    elif score < 0.35 or upside_val < -15:                 return "🔴 SORTIR"
-    else:                                                  return "🟠 ALLÉGER"
+def _normalize(s):
+    import unicodedata as _ud
+    s = str(s).strip().lower().replace(" ", "").replace("\xa0", "")
+    return "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn")
 
-def valeur_intrinseque_dcf(bpa, croissance_bpa, taux):
-    """DCF 2 phases + Graham Number."""
-    g1 = min(max(croissance_bpa / 100, -0.10), 0.20)
+def _parse_table(html, ticker):
+    """BS4 row-scanner → pd.read_html fallback. Retourne (prix, variation)."""
+    tk = ticker.upper().strip()
+    if HAS_BS4:
+        soup = BeautifulSoup(html, "html.parser")
+        for table in soup.find_all("table"):
+            for tr in table.find_all("tr"):
+                cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
+                if tk not in [c.upper() for c in cells]:
+                    continue
+                nums   = [to_float(c) for c in cells]
+                prices = [v for v in nums if v and v > 50]
+                if not prices:
+                    continue
+                prix = prices[0]
+                var  = next((v for v in nums if v is not None and -30 < v < 30 and v != prix), 0.0)
+                return prix, var
+    try:
+        for df in pd.read_html(StringIO(html)):
+            df.columns = [_normalize(c) for c in df.columns]
+            col_tk = next((c for c in df.columns if any(k in c for k in ["symbol","ticker","code","valeur","titre","sigle"])), None)
+            col_px = next((c for c in df.columns if any(k in c for k in ["cours","cotation","close","prix","dernier","actuel"])), None)
+            if not col_tk or not col_px:
+                continue
+            mask = df[col_tk].astype(str).str.upper().str.strip() == tk
+            if not mask.any():
+                continue
+            row = df[mask].iloc[0]
+            px  = to_float(row[col_px])
+            if px and px > 50:
+                col_var = next((c for c in df.columns if any(k in c for k in ["variation","var","change","evol","%"])), None)
+                return px, to_float(row[col_var], 0.0) if col_var else 0.0
+    except Exception:
+        pass
+    return None, None
+
+# ══════════════════════════════════════════════════════════════════
+# SCRAPING — COURS
+# ══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_cours(ticker: str) -> dict:
+    """Cascade cours : richbourse → brvm.org → sikafinance"""
+    tk = ticker.upper().strip()
+    COL_TK = ["symbole","ticker","code","valeur","titre","action"]
+    COL_PX = ["cours actuel","actuel","dernier cours","cours","clôture","cloture","close","prix"]
+    COL_VR = ["variation","var","évolution","evolution"]
+
+    # ── Richbourse ──────────────────────────────────────────────
+    for url in [f"{RICHBOURSE_BASE}/common/variation/index",
+                f"{RICHBOURSE_BASE}/common/variation/index/veille/tout"]:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            if resp.status_code != 200 or len(resp.text) < 500:
+                continue
+            for df in pd.read_html(StringIO(resp.text)):
+                df.columns = [str(c).strip().lower().replace(" ", "").replace("\xa0", "") for c in df.columns]
+                col_tk  = next((c for c in df.columns if any(k in c for k in COL_TK)), None)
+                col_px  = next((c for c in df.columns if any(k in c for k in COL_PX)), None)
+                col_var = next((c for c in df.columns if any(k in c for k in COL_VR)), None)
+                if not col_tk:
+                    for col in df.columns:
+                        if df[col].astype(str).str.upper().str.strip().eq(tk).any():
+                            col_tk = col; break
+                if not col_tk or not col_px:
+                    continue
+                mask = df[col_tk].astype(str).str.upper().str.strip() == tk
+                sub  = df[mask].dropna(subset=[col_px])
+                if sub.empty:
+                    continue
+                px = to_float(sub[col_px].iloc[0])
+                vr = to_float(sub[col_var].iloc[0], 0.0) if col_var else 0.0
+                if px and px > 0:
+                    return {"prix": px, "variation_pct": vr, "source": "richbourse"}
+        except Exception:
+            continue
+
+    # ── brvm.org ────────────────────────────────────────────────
+    for url in ["https://www.brvm.org/fr/cours-actions/0",
+                "https://www.brvm.org/fr/cours-actions/0/symbole/asc/100/1"]:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            if r.status_code == 200 and tk in r.text.upper():
+                px, var = _parse_table(r.text, tk)
+                if px:
+                    return {"prix": px, "variation_pct": var or 0.0, "source": "brvm.org"}
+        except Exception:
+            continue
+
+    # ── Sikafinance ─────────────────────────────────────────────
+    for url in ["https://www.sikafinance.com/marches/aaz",
+                f"https://www.sikafinance.com/valeur/BRVM/{tk}"]:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            if r.status_code == 200 and tk in r.text.upper():
+                px, var = _parse_table(r.text, tk)
+                if px:
+                    return {"prix": px, "variation_pct": var or 0.0, "source": "sikafinance"}
+        except Exception:
+            continue
+
+    return {}
+
+# ══════════════════════════════════════════════════════════════════
+# SCRAPING — HISTORIQUE RICHBOURSE → INDICATEURS TECHNIQUES
+# ══════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
+    """
+    Récupère l'historique journalier depuis richbourse.com.
+    Retourne un DataFrame [date, close] trié ASC.
+    """
+    tk  = ticker.upper()
+    url = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+    hdrs = {**HEADERS, "Referer": f"{RICHBOURSE_BASE}/", "Accept": "text/html,application/xhtml+xml"}
+    try:
+        r = requests.get(url, headers=hdrs, timeout=20, verify=False)
+        if r.status_code != 200 or not HAS_BS4:
+            return pd.DataFrame()
+        soup  = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table")
+        if table is None:
+            return pd.DataFrame()
+        rows = table.find_all("tr")
+        data = []
+        for tr in rows[1:]:
+            cols = tr.find_all("td")
+            if len(cols) >= 2:
+                data.append([cols[0].get_text(strip=True), cols[1].get_text(strip=True)])
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data, columns=["date", "close"])
+        df["date"]  = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+        df["close"] = pd.to_numeric(
+            df["close"].str.replace(r"[\xa0\s]", "", regex=True).str.replace(",", ".", regex=False),
+            errors="coerce")
+        return df.dropna().sort_values("date").tail(nb).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+def calc_indicateurs(df: pd.DataFrame) -> dict:
+    """
+    Calcule BB(20,2), EMA(20), RSI(14) depuis l'historique.
+    Nécessite au minimum 20 bougies.
+    """
+    if df.empty or len(df) < 20:
+        return {}
+    close = df["close"]
+
+    # EMA 20
+    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+
+    # RSI 14 (méthode Wilder SMA initiale → RMA)
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs       = avg_gain / avg_loss
+    rsi_ser  = 100 - (100 / (1 + rs))
+    rsi_val  = rsi_ser.iloc[-1]
+
+    # Bollinger Bands (20, 2)
+    bb_mid = close.rolling(20).mean().iloc[-1]
+    bb_std = close.rolling(20).std().iloc[-1]
+    bb_sup = bb_mid + 2 * bb_std
+    bb_inf = bb_mid - 2 * bb_std
+
+    # Variation 1 semaine
+    var_1s = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(close) >= 6 else 0.0
+
+    return {
+        "rsi":    round(rsi_val, 1),
+        "ema20":  round(ema20, 0),
+        "bb_sup": round(bb_sup, 0),
+        "bb_inf": round(bb_inf, 0),
+        "bb_mid": round(bb_mid, 0),
+        "var_1s": round(var_1s, 2),
+        "nb_pts": len(close),
+    }
+
+
+def get_marche(ticker: str) -> dict:
+    """
+    Pipeline unifié :
+      1. fetch_cours()       → prix + variation
+      2. fetch_historique()  → BB(20,2) + EMA(20) + RSI(14) calculés localement
+    """
+    tk = ticker.upper().strip()
+    result = {}
+    result.update(fetch_cours(tk))
+    df_hist = fetch_historique(tk)
+    if not df_hist.empty:
+        indics = calc_indicateurs(df_hist)
+        result.update(indics)
+        result["_source_tech"] = f"richbourse · {indics.get('nb_pts', 0)} pts"
+    return result
+
+# ══════════════════════════════════════════════════════════════════
+# CALCULS FONDAMENTAUX
+# ══════════════════════════════════════════════════════════════════
+def extrapoler(resultat, periode, secteur):
+    s = SAISONNALITE_S1.get(secteur, 0.50)
+    if "9 mois" in periode:
+        return resultat / 3 * 4, "9M × 4/3", "Elevee"
+    elif "Semestriel" in periode:
+        return resultat / s, f"S1 / {s:.2f}", "Moderee"
+    return resultat, "Données annuelles", "Annuelle"
+
+def vi_dcf(bpa, g_bpa, taux):
+    g1 = min(max(g_bpa / 100, -0.10), 0.20)
     g2, r = 0.03, taux
     flux = sum(bpa * (1 + g1) ** t / (1 + r) ** t for t in range(1, 6))
-    vt   = (bpa * (1 + g1) ** 5 * (1 + g2)) / (r - g2) / (1 + r) ** 5
+    vt   = bpa * (1 + g1) ** 5 * (1 + g2) / (r - g2) / (1 + r) ** 5
     return flux + vt
 
-# ==========================================================
+def calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb):
+    if f_rsi:                              return "🔴 BLOQUÉ RSI"
+    if f_bb:                               return "🔴 BLOQUÉ BB"
+    if survalu:                            return "🔴 SURÉVALUÉ"
+    if hors_marge:                         return "🟡 HORS MARGE"
+    if score >= 0.65 and upside > 25:      return "🟢 FORT ACHAT"
+    if score >= 0.50 and upside > 15:      return "🔵 ACHAT"
+    if score >= 0.40 and upside > 5:       return "🟡 SURVEILLER"
+    if score < 0.35 or upside < -15:       return "🔴 SORTIR"
+    return "🟠 ALLÉGER"
+
+# ══════════════════════════════════════════════════════════════════
+# SESSION STATE
+# ══════════════════════════════════════════════════════════════════
+if "screener" not in st.session_state:
+    st.session_state.screener = []
+
+# ══════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("### ⚙️ Paramètres")
+    mode_simple = st.radio("Mode", ["Simple", "Expert"], horizontal=True) == "Simple"
+
+    if mode_simple:
+        W_V, W_Q, W_M = 0.35, 0.40, 0.25
+    else:
+        st.markdown("**Pondérations du score**")
+        W_V = st.slider("Value",    0.1, 0.6, 0.30, 0.05)
+        W_Q = st.slider("Quality",  0.1, 0.6, 0.40, 0.05)
+        W_M = st.slider("Momentum", 0.1, 0.6, 0.30, 0.05)
+        T   = W_V + W_Q + W_M; W_V /= T; W_Q /= T; W_M /= T
+
+    st.markdown("---")
+    st.markdown("**Filtres techniques**")
+    RSI_HAUT = st.slider("RSI surachat",   60, 80, 70, 5)
+    RSI_BAS  = st.slider("RSI survente",   20, 40, 30, 5)
+    MARGE    = st.slider("Marge sécurité (%)", 5, 30, 20, 5) / 100
+
+    st.markdown("---")
+    if st.button("🗑️ Vider cache cours"):
+        fetch_cours.clear()
+        fetch_historique.clear()
+        st.success("Cache vidé ✅"); st.rerun()
+    if st.button("🗑️ Vider le screener"):
+        st.session_state.screener = []; st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Import / Export**")
+    fonds_list = list_fonds()
+    if fonds_list:
+        if st.button("⬇️ Exporter JSON"):
+            with db() as conn:
+                rows = [dict(r) for r in conn.execute("SELECT * FROM fondamentaux").fetchall()]
+            st.download_button("Télécharger", json.dumps(rows, ensure_ascii=False, indent=2),
+                               "fondamentaux_brvm.json", mime="application/json")
+    up = st.file_uploader("📥 Importer JSON", type="json")
+    if up:
+        try:
+            rows = json.loads(up.read())
+            for row in rows:
+                tk_ = row.pop("ticker", None)
+                if tk_: save_fond(tk_, row)
+            st.success(f"✅ {len(rows)} titres importés"); st.rerun()
+        except Exception as e:
+            st.error(str(e))
+
+# ══════════════════════════════════════════════════════════════════
 # EN-TÊTE
-# ==========================================================
-st.title("⬡ Screener BRVM")
-st.caption("Valeur intrinsèque (Graham) • Marge de sécurité • Filtres techniques • Rotation hebdomadaire")
+# ══════════════════════════════════════════════════════════════════
+col_title, col_meta = st.columns([3, 1])
+with col_title:
+    st.markdown("# ⬡ Screener BRVM")
+with col_meta:
+    nb_screener = len(st.session_state.screener)
+    st.markdown(f"""
+    <div style='text-align:right;padding-top:8px'>
+        <span class='pill pill-{'green' if nb_screener>0 else 'blue'}'>{nb_screener} titre{'s' if nb_screener>1 else ''} analysé{'s' if nb_screener>1 else ''}</span>
+    </div>""", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["➕ Analyser un titre", "📊 Tableau de bord", "📖 Méthodologie"])
+tab1, tab2, tab3, tab4 = st.tabs(["➕  Analyser", "📊  Dashboard", "💾  Fondamentaux", "📖  Méthode"])
 
-# ==========================================================
-# TAB 1 — FORMULAIRE INTERACTIF
-# ==========================================================
+# ══════════════════════════════════════════════════════════════════
+# TAB 1 — FORMULAIRE
+# ══════════════════════════════════════════════════════════════════
 with tab1:
 
-    # ── SECTION 1 : Identification — HORS FORM pour réactivité ──
-    st.markdown("<div class='section-header'>1 — Identification & Contexte</div>", unsafe_allow_html=True)
+    LABELS  = {tk: f"{tk} — {v[0]}" for tk, v in TICKERS_BRVM.items()}
+    choices = ["(Saisie libre)"] + [LABELS[tk] for tk in sorted(TICKERS_BRVM)]
 
-    c1, c2, c3, c4 = st.columns(4)
+    # ── Sélection ──────────────────────────────────────────────
+    c1, c2, c3 = st.columns([3, 2, 1])
     with c1:
-        titre = st.text_input("Nom / Ticker", placeholder="ex: SONATEL, SGBCI…", key="titre_input")
+        choice = st.selectbox("Ticker BRVM", choices)
+        if choice == "(Saisie libre)":
+            titre = st.text_input("Ticker", placeholder="ex: SNTS").upper().strip()
+        else:
+            titre = next(tk for tk, lb in LABELS.items() if lb == choice)
     with c2:
-        secteur = st.selectbox("Secteur", list(PER_SECTORIELS.keys()), key="secteur_input")
-        st.session_state.secteur_sel = secteur
+        periode = st.selectbox("Période", ["Annuel complet", "9 mois (T1+T2+T3)", "Semestriel (S1)"])
     with c3:
-        periode_donnees = st.selectbox(
-            "Période disponible",
-            ["Annuel complet (2024 ou 2025)", "9 mois (T1+T2+T3)", "Semestriel (S1 — 6 mois)"],
-            key="periode_input"
-        )
-        st.session_state.periode_sel = periode_donnees
-    with c4:
-        annee_donnees = st.selectbox("Exercice", ["2025", "2024", "2023"], key="annee_input")
-        st.session_state.annee_sel = annee_donnees
+        annee = st.selectbox("Exercice", ["2025", "2024", "2023"])
 
-    # Affichage contextuel réactif — s'actualise immédiatement
-    est_banque  = (secteur == SECTEUR_BANCAIRE)
-    per_cible   = PER_SECTORIELS[secteur]
-    taux_suggere = TAUX_DCF_SECTEUR[secteur]
+    secteur_auto = TICKERS_BRVM.get(titre, (None, None))[1] if titre else None
+    nom_auto     = TICKERS_BRVM.get(titre, (None, None))[0] if titre else None
+    fond_saved   = load_fond(titre) if titre and len(titre) >= 3 else None
 
-    info_cols = st.columns(4)
-    with info_cols[0]:
-        st.markdown(f"""
-        <div class="filter-block">
-        <div class="label-small">PER cible sectoriel</div>
-        <b style="font-family:'IBM Plex Mono';font-size:1.2em">{per_cible:.2f}x</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[1]:
-        taux_color = "#79c0ff"
-        st.markdown(f"""
-        <div class="filter-block">
-        <div class="label-small">Taux DCF suggéré</div>
-        <b style="font-family:'IBM Plex Mono';font-size:1.2em;color:{taux_color}">{taux_suggere*100:.0f}%</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[2]:
-        if periode_donnees == "9 mois (T1+T2+T3)":
-            msg, col = "Extrapolation × 4/3 — confiance élevée", "#3fb950"
-        elif periode_donnees == "Semestriel (S1 — 6 mois)":
-            saison = SAISONNALITE_S1[secteur]
-            msg, col = f"Extrapolation ÷ {saison:.2f} — confiance modérée", "#d29922"
+    # ── Chargement marché ──────────────────────────────────────
+    mdata = {}
+    if titre and len(titre) >= 3:
+        with st.spinner(f"Chargement {titre}…"):
+            mdata = get_marche(titre)
+
+    # ── Carte ticker ───────────────────────────────────────────
+    if titre and len(titre) >= 3:
+        em  = SECTEUR_EMOJI.get(secteur_auto or "", "")
+        px_ok = "prix" in mdata
+        var_v = mdata.get("variation_pct", 0.0)
+        var_c = "#3fb950" if var_v >= 0 else "#f85149"
+        if px_ok:
+            px_str = f"{mdata['prix']:,.0f} FCFA &nbsp; <span style='color:{var_c}'>{'+' if var_v >= 0 else ''}{var_v:.2f}%</span>"
         else:
-            msg, col = "Données complètes — aucune extrapolation", "#3fb950"
+            px_str = "<span style='color:#d29922'>⚠️ Cours non disponible</span>"
+
+        saved_badge = "<span class='pill pill-blue'>💾 sauvegardé</span>" if fond_saved else ""
+        src_badge   = f"<span class='pill'>{mdata.get('source','')}</span>" if px_ok else ""
+
         st.markdown(f"""
-        <div class="filter-block">
-        <div class="label-small">Méthode données</div>
-        <b style="font-size:0.85em;color:{col}">{msg}</b>
-        </div>""", unsafe_allow_html=True)
-    with info_cols[3]:
-        badge_b = "🏦 Formulaire bancaire actif" if est_banque else "📋 Formulaire standard"
-        col_b   = "#79c0ff" if est_banque else "#8b949e"
-        st.markdown(f"""
-        <div class="filter-block">
-        <div class="label-small">Mode saisie</div>
-        <b style="font-size:0.85em;color:{col_b}">{badge_b}</b>
+        <div class="card card-accent">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+            <div>
+              <span style="font-family:'Space Mono',monospace;font-size:1.4em;font-weight:700;color:#e6edf3">{titre}</span>
+              <span style="color:#8b949e;margin-left:10px;font-size:.9em">{nom_auto or ''}</span><br>
+              <span class="pill">{em} {secteur_auto or ''}</span> {saved_badge}
+            </div>
+            <div style="text-align:right">
+              <div style="font-family:'Space Mono',monospace;font-size:1.15em">{px_str}</div>
+              {src_badge}
+            </div>
+          </div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown("<hr class='form-divider'>", unsafe_allow_html=True)
+        # ── Barre de statut indicateurs ─────────────────────────
+        has_prix = px_ok
+        has_rsi  = "rsi"    in mdata
+        has_bb   = "bb_sup" in mdata and "bb_inf" in mdata
+        has_ema  = "ema20"  in mdata
+        nb_pts   = mdata.get("nb_pts", 0)
+        src_tech = mdata.get("_source_tech", "—")
 
-    # ── Bilan de référence pour données intermédiaires ────────
-    if periode_donnees != "Annuel complet (2024 ou 2025)":
-        annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
+        def _dot(ok):
+            cls = "dot-green" if ok else "dot-red"
+            return f"<span class='dot {cls}'></span>"
+
+        all_ok = has_prix and has_rsi and has_bb and has_ema
+        bar_border = "#3fb950" if all_ok else ("#d29922" if has_prix else "#f85149")
+
+        st.markdown(f"""
+        <div class="status-bar" style="border-left:3px solid {bar_border}">
+          <div class="status-item">{_dot(has_prix)} Cours{' '+str(int(mdata['prix']))+' FCFA' if has_prix else ''}</div>
+          <div style="color:#1e2633">|</div>
+          <div class="status-item">{_dot(has_rsi)} RSI{' '+str(mdata['rsi']) if has_rsi else ''}</div>
+          <div style="color:#1e2633">|</div>
+          <div class="status-item">{_dot(has_bb)} BB &nbsp;{str(int(mdata.get('bb_inf',0)))+' / '+str(int(mdata.get('bb_sup',0))) if has_bb else ''}</div>
+          <div style="color:#1e2633">|</div>
+          <div class="status-item">{_dot(has_ema)} EMA20 &nbsp;{str(int(mdata['ema20'])) if has_ema else ''}</div>
+          <div style="color:#1e2633">|</div>
+          <div class="status-item" style="color:#8b949e">{nb_pts} pts · {src_tech}</div>
+        </div>""", unsafe_allow_html=True)
+
+        if not has_prix:
+            st.markdown('<div class="banner banner-yellow">⚠️ Cours non chargé automatiquement — saisir manuellement ci-dessous. Vider le cache pour réessayer.</div>', unsafe_allow_html=True)
+
+        if "Annuel" not in periode:
+            champ = "Crédits / Dépôts" if secteur_auto == "Services Financiers" else "Capitaux propres, actif, dettes"
+            st.markdown(f'<div class="banner banner-blue">📅 Publication intermédiaire — {champ} : référez-vous au bilan {int(annee)-1}. Le résultat sera extrapolé.</div>', unsafe_allow_html=True)
+
+    # ── Secteur ────────────────────────────────────────────────
+    idx     = SECTEURS.index(secteur_auto) if secteur_auto in SECTEURS else 0
+    secteur = st.selectbox("Secteur", SECTEURS, index=idx,
+                           format_func=lambda s: f"{SECTEUR_EMOJI.get(s,'')} {s}")
+    est_banque = secteur == "Services Financiers"
+    TAUX_ACTUA = TAUX_DCF[secteur]
+    if not mode_simple:
+        st.caption(f"Taux DCF : {TAUX_ACTUA*100:.0f}%  ·  PER cible sectoriel : {PER_SECTORIELS[secteur]:.2f}×")
+
+    # ── Formulaire ─────────────────────────────────────────────
+    def fd(k, d):
+        return fond_saved[k] if fond_saved and k in fond_saved and fond_saved[k] is not None else d
+
+    with st.form("saisie"):
+        # Prix
+        px_def   = float(mdata.get("prix", 1000.0))
+        src_lbl  = f"[{mdata['source']}]" if "source" in mdata else "⚠️ saisie manuelle"
+        prix = st.number_input(f"💰 Prix actuel FCFA {src_lbl}", min_value=1.0, value=px_def)
+
+        st.markdown('<hr class="sep">', unsafe_allow_html=True)
+
+        # ── Fondamentaux ─────────────────────────────────────────
         if est_banque:
-            msg_bilan = f"Crédits et dépôts : référez-vous au bilan {annee_bilan_ref}."
+            st.markdown("**📊 Données bancaires**")
+            a1, a2 = st.columns(2)
+            with a1:
+                pnb             = st.number_input("PNB (M FCFA)",            min_value=1.0, value=fd("pnb", 5000.0))
+                encours_credits = st.number_input("Encours crédits (M FCFA)", min_value=1.0, value=fd("encours_credits", 30000.0))
+            with a2:
+                resultat_saisi  = st.number_input("Résultat net (M FCFA)",   value=fd("resultat_b", 800.0))
+                depots          = st.number_input("Dépôts clientèle (M FCFA)", min_value=1.0, value=fd("depots_clientele", 40000.0))
+            b1, b2, b3 = st.columns(3)
+            with b1: nombre_actions   = st.number_input("Actions (millions)", min_value=0.001, value=fd("nombre_actions", 10.0))
+            with b2: capitaux_propres = st.number_input("Cap. propres (M FCFA)", min_value=1.0, value=fd("capitaux_propres", 8000.0))
+            with b3:
+                dividende = st.number_input("Dividende/action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
+                bpa_prec  = st.number_input("BPA an préc. (FCFA)",     value=fd("bpa_prec", 80.0))
+            total_actif = dettes_totales = stabilite_bpa = None
         else:
-            msg_bilan = f"Capitaux propres, total actif, dettes : référez-vous au bilan {annee_bilan_ref}."
-        st.markdown(f"""
-        <div class="alert-estimated">
-        📅 <b>Publication intermédiaire détectée</b> — {msg_bilan}
-        Le résultat saisi sera extrapolé automatiquement.
-        </div>""", unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════
-    # FORMULAIRE DE SAISIE (st.form pour les données chiffrées)
-    # ══════════════════════════════════════════════════════════
-    with st.form("saisie_titre", clear_on_submit=True):
-
-        prix = st.number_input("💰 Prix actuel de l'action (FCFA)",
-                               min_value=1.0, value=1000.0,
-                               help="Cours du jour — brvm.org → Cotations")
-
-        # ── SECTION 2 : Données financières ───────────────────
-        if est_banque:
-            # ─────────────────────────────────────────────────
-            # FORMULAIRE BANCAIRE SIMPLIFIÉ
-            # Données disponibles en pratique sur BRVM :
-            #   Compte de résultat : PNB + Résultat net
-            #   Bilan              : Encours crédits + Dépôts
-            # ─────────────────────────────────────────────────
-            st.markdown("<div class='section-header'>2 — Données bancaires</div>", unsafe_allow_html=True)
-
-            st.markdown("""
-            <div class="alert-estimated">
-            🏦 <b>Secteur bancaire — saisie simplifiée</b><br>
-            <span style="font-size:0.88em">
-            Seules les données réellement disponibles dans les publications BRVM sont demandées.
-            Le ratio Dette/CP classique est remplacé par des métriques UEMOA adaptées.
-            </span>
-            </div>""", unsafe_allow_html=True)
-
-            label_rn = {
-                "Annuel complet (2024 ou 2025)": "Résultat net annuel (millions FCFA)",
-                "9 mois (T1+T2+T3)":            "Résultat net 9 mois (millions FCFA)",
-                "Semestriel (S1 — 6 mois)":     "Résultat net S1 (millions FCFA)",
-            }[periode_donnees]
-
             st.markdown("**📊 Compte de résultat**")
-            st.markdown(f"<div class='tooltip-text'>📍 Rapport {annee_donnees} — {periode_donnees}</div>",
-                        unsafe_allow_html=True)
-            bc1, bc2 = st.columns(2)
-            with bc1:
-                pnb = st.number_input("PNB — Produit Net Bancaire (millions FCFA)",
-                                      min_value=1.0, value=5000.0,
-                                      help="Marge d'intérêts + commissions nettes. "
-                                           "C'est le 'chiffre d'affaires' de la banque.\n"
-                                           "Compte de résultat → Produit Net Bancaire.")
-                st.markdown("<div class='tooltip-text'>📍 Compte de résultat → Produit Net Bancaire</div>",
-                            unsafe_allow_html=True)
-            with bc2:
-                resultat_saisi_b = st.number_input(label_rn, value=800.0,
-                                                   help="Bénéfice net de la période.\n"
-                                                        "Compte de résultat → Résultat net.")
-                st.markdown("<div class='tooltip-text'>📍 Compte de résultat → Résultat net</div>",
-                            unsafe_allow_html=True)
+            a1, a2, a3 = st.columns(3)
+            with a1:
+                resultat_saisi = st.number_input("Résultat net (M FCFA)", value=fd("resultat", 500.0))
+                nombre_actions = st.number_input("Actions (millions)",     min_value=0.001, value=fd("nombre_actions", 10.0))
+            with a2:
+                dividende = st.number_input("Dividende/action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
+                bpa_prec  = st.number_input("BPA an préc. (FCFA)",     value=fd("bpa_prec", 80.0))
+            with a3:
+                if mode_simple:
+                    stabilite_bpa = "Stable"
+                else:
+                    stabilite_bpa = st.selectbox("Régularité bénéfices", ["Stable", "Volatil", "Exceptionnel"],
+                        index=["Stable", "Volatil", "Exceptionnel"].index(fd("stabilite_bpa", "Stable")))
 
             st.markdown("**🏦 Bilan**")
-            if periode_donnees != "Annuel complet (2024 ou 2025)":
-                st.markdown(f"<div class='tooltip-text'>📍 Bilan {annee_bilan_ref} (dernière année complète publiée)</div>",
-                            unsafe_allow_html=True)
-            bc3, bc4 = st.columns(2)
-            with bc3:
-                encours_credits = st.number_input("Encours crédits à la clientèle (millions FCFA)",
-                                                  min_value=1.0, value=30000.0,
-                                                  help="Total des crédits accordés aux clients.\n"
-                                                       "Bilan → Créances sur la clientèle.")
-                st.markdown("<div class='tooltip-text'>📍 Bilan → Créances sur la clientèle</div>",
-                            unsafe_allow_html=True)
-            with bc4:
-                depots_clientele = st.number_input("Dépôts de la clientèle (millions FCFA)",
-                                                   min_value=1.0, value=40000.0,
-                                                   help="Total des dépôts (vue + terme + épargne).\n"
-                                                        "Bilan → Dettes envers la clientèle.")
-                st.markdown("<div class='tooltip-text'>📍 Bilan → Dettes envers la clientèle</div>",
-                            unsafe_allow_html=True)
-
-            # Données complémentaires communes
-            st.markdown("**📌 Données complémentaires**")
-            bx1, bx2, bx3 = st.columns(3)
-            with bx1:
-                nombre_actions_b = st.number_input("Nombre d'actions (millions)",
-                                                   min_value=0.001, value=10.0)
-            with bx2:
-                capitaux_propres_b = st.number_input("Capitaux propres (millions FCFA)",
-                                                     min_value=1.0, value=8000.0,
-                                                     help="Bilan → Capitaux propres. Nécessaire pour le P/B et le ROE.")
-                st.markdown("<div class='tooltip-text'>📍 Bilan → Capitaux propres</div>",
-                            unsafe_allow_html=True)
-            with bx3:
-                dividende_b  = st.number_input("Dividende par action (FCFA)", min_value=0.0, value=0.0)
-                bpa_prec_b   = st.number_input("BPA année précédente (FCFA)", value=80.0)
-
-        else:
-            # ─────────────────────────────────────────────────
-            # FORMULAIRE STANDARD (non-bancaire)
-            # ─────────────────────────────────────────────────
-            st.markdown("<div class='section-header'>2A — Compte de résultat</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='tooltip-text'>📍 Rapport {annee_donnees} — {periode_donnees}</div>",
-                        unsafe_allow_html=True)
-
-            label_rn_std = {
-                "Annuel complet (2024 ou 2025)": "Résultat net annuel (millions FCFA)",
-                "9 mois (T1+T2+T3)":            "Résultat net 9 mois (millions FCFA)",
-                "Semestriel (S1 — 6 mois)":     "Résultat net S1 (millions FCFA)",
-            }[periode_donnees]
-
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                resultat_saisi = st.number_input(label_rn_std, value=500.0,
-                                                 help="Compte de résultat → Résultat net.")
-                nombre_actions = st.number_input("Nombre d'actions (millions)", min_value=0.001, value=10.0)
-            with s2:
-                dividende    = st.number_input("Dividende par action (FCFA)", min_value=0.0, value=0.0)
-                bpa_prec     = st.number_input("BPA année précédente (FCFA)", value=80.0)
-            with s3:
-                if not mode_simple:
-                    stabilite_bpa = st.selectbox("Régularité bénéfices (3-5 ans)",
-                                                 ["Stable", "Volatil", "Exceptionnel"])
-                else:
-                    stabilite_bpa = "Stable"
-
-            if periode_donnees != "Annuel complet (2024 ou 2025)":
-                annee_bilan_ref = str(int(annee_donnees) - 1) if annee_donnees != "2024" else "2024"
-                source_bilan = f"Bilan {annee_bilan_ref}"
-            else:
-                source_bilan = f"Bilan {annee_donnees}"
-
-            st.markdown(f"<div class='section-header'>2B — Bilan ({source_bilan})</div>",
-                        unsafe_allow_html=True)
             b1, b2, b3 = st.columns(3)
-            with b1:
-                capitaux_propres = st.number_input("Capitaux propres (millions FCFA)",
-                                                   min_value=1.0, value=2000.0)
-            with b2:
-                total_actif = st.number_input("Total actif (millions FCFA)",
-                                              min_value=1.0, value=5000.0)
-            with b3:
-                dettes_totales = st.number_input("Dettes financières (millions FCFA)",
-                                                 min_value=0.0, value=1000.0,
-                                                 help="Emprunts + dettes bancaires. "
-                                                      "Vérifiez si un emprunt majeur est intervenu depuis.")
+            with b1: capitaux_propres = st.number_input("Cap. propres (M FCFA)", min_value=1.0, value=fd("capitaux_propres", 2000.0))
+            with b2: total_actif      = st.number_input("Total actif (M FCFA)",  min_value=1.0, value=fd("total_actif", 5000.0))
+            with b3: dettes_totales   = st.number_input("Dettes fin. (M FCFA)",  min_value=0.0, value=fd("dettes_totales", 1000.0))
+            pnb = encours_credits = depots = None
 
-        # ── SECTION 3 : Indicateurs techniques ────────────────
-        st.markdown("<div class='section-header'>3 — Indicateurs techniques</div>", unsafe_allow_html=True)
-        st.markdown("""<div class='tooltip-text'>
-        📍 TradingView → chercher le ticker BRVM → ajouter BB (20,2), EMA (20), RSI (14)
-        </div>""", unsafe_allow_html=True)
+        # ── Indicateurs techniques ─────────────────────────────
+        st.markdown('<hr class="sep">', unsafe_allow_html=True)
+        st.markdown("**📡 Indicateurs techniques**")
 
-        t1, t2, t3, t4 = st.columns(4)
+        has_tech = all(k in mdata for k in ["rsi", "bb_sup", "bb_inf", "ema20"])
+        if has_tech:
+            st.markdown(f"""<div class="banner banner-green">
+            ✅ BB(20,2) · EMA(20) · RSI(14) calculés depuis l'historique Richbourse
+            &nbsp;—&nbsp; RSI <b>{mdata['rsi']:.0f}</b> · BB [{mdata['bb_inf']:,.0f} / {mdata['bb_sup']:,.0f}] · EMA20 <b>{mdata['ema20']:,.0f}</b>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="banner banner-yellow">⚠️ Historique non disponible — saisir manuellement (TradingView ou richbourse.com)</div>', unsafe_allow_html=True)
+
+        t1, t2, t3 = st.columns(3)
         with t1:
-            st.markdown("**📈 Bollinger Bands (20,2)**")
-            bb_sup = st.number_input("BB supérieure (FCFA)", min_value=1.0, value=1100.0)
-            bb_inf = st.number_input("BB inférieure (FCFA)", min_value=1.0, value=900.0)
+            bb_sup = st.number_input("BB supérieure (20,2)", min_value=1.0, value=float(mdata.get("bb_sup", 1100.0)))
+            bb_inf = st.number_input("BB inférieure (20,2)", min_value=1.0, value=float(mdata.get("bb_inf", 900.0)))
         with t2:
-            st.markdown("**📊 EMA 20**")
-            ema20    = st.number_input("EMA20 (FCFA)", min_value=1.0, value=980.0)
-            var_1s   = st.number_input("Variation 1 semaine (%)", min_value=-30.0, max_value=30.0, value=0.0)
+            ema20  = st.number_input("EMA 20",           min_value=1.0, value=float(mdata.get("ema20", 980.0)))
+            var_1s = st.number_input("Variation 1 sem. (%)", -30.0, 30.0, float(mdata.get("var_1s", 0.0)))
         with t3:
-            st.markdown("**🌡️ RSI (14)**")
-            rsi = st.number_input("RSI", min_value=0.0, max_value=100.0, value=50.0)
+            rsi = st.number_input("RSI (14)", 0.0, 100.0, float(mdata.get("rsi", 50.0)))
             st.markdown(f"""
-            <div class="filter-block">
-            <div class="label-small">Seuils actifs</div>
-            Surachat : <b style="color:#f85149">> {RSI_SURACHAT}</b><br>
-            Survente  : <b style="color:#3fb950">< {RSI_SURVENTE}</b>
-            </div>""", unsafe_allow_html=True)
-        with t4:
-            st.markdown(f"""
-            <div class="filter-block" style="margin-top:28px">
-            <div class="label-small">Marge de sécurité</div>
-            <b style="font-size:1.3em;font-family:'IBM Plex Mono'">{MARGE_SECURITE*100:.0f}%</b>
-            </div>
-            <div class="filter-block">
-            <div class="label-small">Taux DCF utilisé</div>
-            <b style="font-size:1.3em;font-family:'IBM Plex Mono'">{TAUX_ACTUA*100:.0f}%</b>
+            <div style='background:#0d1117;border:1px solid #1e2633;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:.76em;font-family:"Space Mono",monospace'>
+            <div style='color:#8b949e;margin-bottom:4px'>SEUILS RSI</div>
+            <span style='color:#f85149'>▲ Surachat {RSI_HAUT}</span><br>
+            <span style='color:#3fb950'>▼ Survente {RSI_BAS}</span>
             </div>""", unsafe_allow_html=True)
 
-        submitted = st.form_submit_button("🔍 Analyser ce titre", use_container_width=True)
+        save_cb   = st.checkbox("💾 Sauvegarder fondamentaux", value=True)
+        submitted = st.form_submit_button("🔍 Analyser", use_container_width=True)
 
-    # ==========================================================
-    # CALCULS
-    # ==========================================================
+    # ─────────────────────────────────────────────────────────────
+    # CALCULS & AFFICHAGE RÉSULTATS
+    # ─────────────────────────────────────────────────────────────
     if submitted and titre:
+        if any(a["Titre"] == titre.upper() for a in st.session_state.screener):
+            st.error(f"'{titre.upper()}' est déjà dans le screener."); st.stop()
 
-        if any(a["Titre"] == titre for a in st.session_state.actions):
-            st.error(f"⚠️ '{titre}' est déjà dans le screener.")
-            st.stop()
+        # Extrapolation
+        r_an, meth, conf = extrapoler(resultat_saisi, periode, secteur)
+        pnb_ = pnb if est_banque else None
 
-        per_cible_score = PER_CAP_SCORE[secteur]
+        # Ratios
+        bpa       = r_an / nombre_actions
+        val_book  = capitaux_propres / nombre_actions
+        per       = prix / bpa if bpa > 0 else 99
+        pbr       = prix / val_book if val_book > 0 else 99
+        dy        = dividende / prix if prix > 0 else 0
+        g_bpa     = ((bpa - bpa_prec) / abs(bpa_prec) * 100) if bpa_prec else 0
+        roe       = r_an / capitaux_propres * 100
 
-        # ── Extrapolation & ratios de base ─────────────────────
-        if est_banque:
-            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(
-                resultat_saisi_b, periode_donnees, secteur)
-            nombre_actions = nombre_actions_b
-            capitaux_propres = capitaux_propres_b
-            dividende        = dividende_b
-            bpa_prec         = bpa_prec_b
-            stabilite_bpa    = "Stable"
-            total_actif      = encours_credits + depots_clientele   # approximation bilan bancaire
+        # Valeurs intrinsèques
+        graham    = np.sqrt(max(22.5 * bpa * val_book, 0)) if bpa > 0 else 0
+        fv_per    = bpa * PER_SECTORIELS[secteur] if bpa > 0 else 0
+        fv_dcf    = vi_dcf(bpa, g_bpa, TAUX_ACTUA) if bpa > 0 else 0
+        if graham > 0 and fv_dcf > 0:
+            vi = graham * 0.40 + fv_per * 0.35 + fv_dcf * 0.25
+        elif graham > 0:
+            vi = graham * 0.5 + fv_per * 0.5
         else:
-            resultat_annuel, methode_extrapol, confiance = extrapoler_annuel(
-                resultat_saisi, periode_donnees, secteur)
-
-        donnees_estimees = confiance != "Annuelle"
-        bpa          = resultat_annuel / nombre_actions
-        valeur_book  = capitaux_propres / nombre_actions
-        per          = prix / bpa if bpa > 0 else 99
-        pbr          = prix / valeur_book if valeur_book > 0 else 99
-        div_yield    = dividende / prix if prix > 0 else 0
-        croissance_bpa = ((bpa - bpa_prec) / abs(bpa_prec) * 100 if bpa_prec != 0 else 0)
-
-        # ── Valeur intrinsèque (Graham — universel) ────────────
-        graham_number   = np.sqrt(max(22.5 * bpa * valeur_book, 0)) if bpa > 0 else 0
-        fair_value_comp = bpa * per_cible if bpa > 0 else 0
-        fair_value_dcf  = valeur_intrinseque_dcf(bpa, croissance_bpa, TAUX_ACTUA) if bpa > 0 else 0
-
-        if graham_number > 0 and fair_value_dcf > 0:
-            vi = graham_number * 0.40 + fair_value_comp * 0.35 + fair_value_dcf * 0.25
-        elif graham_number > 0:
-            vi = graham_number * 0.50 + fair_value_comp * 0.50
-        else:
-            vi = fair_value_comp
-
-        prix_cible = vi * (1 - MARGE_SECURITE)
+            vi = fv_per
+        prix_cible = vi * (1 - MARGE)
         upside     = (prix_cible / prix - 1) * 100
-        survalue   = prix > vi
-        sous_marge = prix > prix_cible and not survalue
+        survalu    = prix > vi
+        hors_marge = prix > prix_cible and not survalu
 
-        # ── Scores ─────────────────────────────────────────────
-        score_per = np.clip(per_cible_score / per, 0, 1) if per > 0 else 0
-        score_pbr = np.clip(1.5 / pbr, 0, 1)
-        score_dy  = np.clip(div_yield / 0.08, 0, 1)
-        value_score = score_per * 0.40 + score_pbr * 0.35 + score_dy * 0.25
+        # Scores
+        per_cap = min(PER_SECTORIELS[secteur], 25)
+        s_per   = np.clip(per_cap / per, 0, 1) if per > 0 else 0
+        s_pbr   = np.clip(1.5 / pbr, 0, 1)
+        s_dy    = np.clip(dy / 0.08, 0, 1)
+        v_score = s_per * 0.40 + s_pbr * 0.35 + s_dy * 0.25
 
         if est_banque:
-            b = BENCH_BANQUE
-            roe = (resultat_annuel / capitaux_propres) * 100
-
-            # Marge nette bancaire = RN / PNB
-            marge_nette_b  = resultat_annuel / pnb if pnb > 0 else 0
-            score_marge    = np.clip(marge_nette_b / b["marge_nette_cible"], 0, 1)
-
-            # Ratio crédits/dépôts
-            credits_depots = encours_credits / depots_clientele if depots_clientele > 0 else 0
-            ecart_opt      = abs(credits_depots - b["credits_depots_opt"])
-            score_cd       = np.clip(1 - ecart_opt / 0.40, 0, 1)
-
-            # ROE bancaire
-            score_roe_b = np.clip(roe / (b["roe_cible"] * 100), 0, 1)
-
-            # Quality score bancaire
-            # Marge nette PNB (45%) + Crédits/Dépôts (30%) + ROE (25%)
-            quality_score = score_marge * 0.45 + score_cd * 0.30 + score_roe_b * 0.25
-
-            # Pour affichage
-            dette_cp      = None
-            roa           = None
-            coeff_exploit = None
-            cout_risque   = None
-
+            roa = dette_cp = None
+            marge_b = r_an / pnb_ if pnb_ else 0
+            cd_ratio = encours_credits / depots if depots else 0
+            q_score = (np.clip(marge_b / 0.20, 0, 1) * 0.45
+                     + np.clip(1 - abs(cd_ratio - 0.80) / 0.40, 0, 1) * 0.30
+                     + np.clip(roe / 15, 0, 1) * 0.25)
         else:
-            roe       = (resultat_annuel / capitaux_propres) * 100
-            roa       = (resultat_annuel / total_actif) * 100
-            dette_cp  = dettes_totales / capitaux_propres
-            bonus_stab = {"Stable": 0.20, "Volatil": 0.0, "Exceptionnel": 0.30}[stabilite_bpa]
-            quality_score = (
-                np.clip(roe / 25, 0, 1)      * 0.35 +
-                np.clip(roa / 12, 0, 1)      * 0.30 +
-                np.clip(1 - dette_cp / 3, 0, 1) * 0.25 +
-                bonus_stab                   * 0.10
-            )
-            marge_nette_b = credits_depots = coeff_exploit = cout_risque = None
+            roa = r_an / total_actif * 100
+            dette_cp = dettes_totales / capitaux_propres
+            marge_b = cd_ratio = None
+            bonus = {"Stable": 0.20, "Volatil": 0.0, "Exceptionnel": 0.30}.get(stabilite_bpa, 0)
+            q_score = (np.clip(roe / 25, 0, 1) * 0.35
+                     + np.clip(roa / 12, 0, 1) * 0.30
+                     + np.clip(1 - dette_cp / 3, 0, 1) * 0.25
+                     + bonus * 0.10)
 
-        mom_fond  = np.clip(croissance_bpa / 30, -1, 1)
-        mom_prix  = np.clip(var_1s / 10, -1, 1)
-        momentum_score = mom_fond * 0.60 + mom_prix * 0.40
-        score_final = W_VALUE * value_score + W_QUALITY * quality_score + W_MOMENTUM * momentum_score
+        m_score = np.clip(g_bpa / 30, -1, 1) * 0.60 + np.clip(var_1s / 10, -1, 1) * 0.40
+        score   = W_V * v_score + W_Q * q_score + W_M * m_score
 
-        # ── Technique ──────────────────────────────────────────
-        filtre_rsi    = rsi > RSI_SURACHAT
-        filtre_bb_sup = prix > bb_sup
-        bb_pct        = ((prix - bb_inf) / (bb_sup - bb_inf) * 100) if (bb_sup - bb_inf) > 0 else 50
-        ecart_ma      = (prix / ema20 - 1) * 100
-        rsi_survente  = rsi < RSI_SURVENTE
+        f_rsi    = rsi > RSI_HAUT
+        f_bb     = prix > bb_sup
+        bb_pct   = ((prix - bb_inf) / (bb_sup - bb_inf) * 100) if (bb_sup - bb_inf) > 0 else 50
+        ecart_ema = (prix / ema20 - 1) * 100
+        sig      = calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb)
+        col_sig  = SIGNAL_COLORS.get(sig, "#8b949e")
 
-        signal = get_signal(score_final, upside, survalue, sous_marge,
-                            filtre_rsi, filtre_bb_sup, var_1s)
+        # ── Sauvegarde ─────────────────────────────────────────
+        if save_cb:
+            fd_data = {"secteur": secteur, "periode": periode, "annee": annee,
+                       "est_banque": 1 if est_banque else 0,
+                       "nombre_actions": nombre_actions, "dividende": dividende,
+                       "bpa_prec": bpa_prec, "capitaux_propres": capitaux_propres}
+            if est_banque:
+                fd_data.update({"pnb": pnb_, "resultat_b": resultat_saisi,
+                                "encours_credits": encours_credits, "depots_clientele": depots})
+            else:
+                fd_data.update({"resultat": resultat_saisi, "total_actif": total_actif,
+                                "dettes_totales": dettes_totales, "stabilite_bpa": stabilite_bpa})
+            save_fond(titre, fd_data)
 
         # ══════════════════════════════════════════════════════
-        # AFFICHAGE RÉSULTAT
+        # RÉSULTATS
         # ══════════════════════════════════════════════════════
         st.markdown("---")
-        badge_b_html = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;border-radius:10px;padding:1px 8px;font-size:0.72em;font-weight:700'>🏦 BANCAIRE</span>" if est_banque else ""
-        st.markdown(f"### {titre} {badge_donnees(confiance)}{badge_b_html}", unsafe_allow_html=True)
 
-        if donnees_estimees:
+        # En-tête résultats
+        tags = ""
+        if conf != "Annuelle":   tags += "<span class='pill pill-yellow'>⚠️ Estimé</span>"
+        if "prix" in mdata:      tags += "<span class='pill pill-green'>✅ Cours auto</span>"
+        if est_banque:           tags += "<span class='pill pill-blue'>🏦 Bancaire</span>"
+        st.markdown(f"<h2 style='font-family:Space Mono,monospace'>{titre.upper()} {tags}</h2>", unsafe_allow_html=True)
+
+        if conf != "Annuelle":
+            st.markdown(f'<div class="banner banner-blue">📅 Résultat {periode} → annualisé : <b>{r_an:.0f} M FCFA</b> — méthode : {meth}</div>', unsafe_allow_html=True)
+
+        # ── Section : Indicateurs techniques ─────────────────
+        st.markdown("#### 📡 Indicateurs techniques")
+        ic1, ic2, ic3 = st.columns(3)
+
+        # RSI
+        rsi_color = "#f85149" if f_rsi else ("#3fb950" if rsi < RSI_BAS else "#79c0ff")
+        rsi_label = "🔴 Surachat" if f_rsi else ("🟢 Survente" if rsi < RSI_BAS else "✅ Neutre")
+        with ic1:
             st.markdown(f"""
-            <div class="alert-estimated">
-            ⚠️ <b>Données extrapolées — {periode_donnees} {annee_donnees}</b><br>
-            <span style="font-size:0.9em">
-            {methode_extrapol}<br>
-            Résultat saisi : <b>{(resultat_saisi_b if est_banque else resultat_saisi):.0f}M FCFA</b>
-            → Résultat annuel estimé : <b>{resultat_annuel:.0f}M FCFA</b>
-            </span>
+            <div class="ind-box" style="border-color:{rsi_color}33">
+              <div class="ind-label">RSI · 14</div>
+              <div class="ind-value" style="color:{rsi_color}">{rsi:.0f}</div>
+              <div class="ind-sub" style="color:{rsi_color}">{rsi_label}</div>
             </div>""", unsafe_allow_html=True)
 
-        # Filtres techniques
-        st.markdown("#### 📡 Filtres techniques")
-        tc1, tc2, tc3 = st.columns(3)
-        with tc1:
-            rc = "#f85149" if filtre_rsi else ("#3fb950" if rsi_survente else "#79c0ff")
-            rl = f"🔴 BLOQUÉ (>{RSI_SURACHAT})" if filtre_rsi else (f"🟢 Survente (<{RSI_SURVENTE})" if rsi_survente else "✅ Zone neutre")
-            st.markdown(f"""<div class="filter-block">
-            <div class="label-small">RSI (14)</div>
-            <b style="font-size:1.6em;color:{rc}">{rsi:.0f}</b><br>
-            <span style="color:{rc};font-size:0.85em">{rl}</span></div>""", unsafe_allow_html=True)
-        with tc2:
-            bc = "#f85149" if filtre_bb_sup else ("#3fb950" if prix < bb_inf else "#79c0ff")
-            bl = "🔴 BLOQUÉ" if filtre_bb_sup else ("🟢 Sous BB inf" if prix < bb_inf else "✅ Dans les bandes")
-            st.markdown(f"""<div class="filter-block">
-            <div class="label-small">Bollinger Bands — position</div>
-            <b style="color:{bc}">{bb_pct:.0f}% de la bande</b><br>
-            <span style="color:#8b949e;font-size:0.82em">{bb_inf:,.0f} | <b style="color:#e6edf3">{prix:,.0f}</b> | {bb_sup:,.0f}</span><br>
-            <span style="color:{bc};font-size:0.85em">{bl}</span></div>""", unsafe_allow_html=True)
-        with tc3:
-            mc = "#3fb950" if prix > ema20 else "#f85149"
-            ml = "✅ Prix > EMA20 (haussier)" if prix > ema20 else "⚠️ Prix < EMA20 (baissier)"
-            st.markdown(f"""<div class="filter-block">
-            <div class="label-small">EMA 20</div>
-            <b style="color:{mc}">{ema20:,.0f} FCFA</b><br>
-            <span style="color:#8b949e;font-size:0.82em">Écart : {ecart_ma:+.1f}%</span><br>
-            <span style="color:{mc};font-size:0.85em">{ml}</span></div>""", unsafe_allow_html=True)
+        # Bollinger
+        bb_color = "#f85149" if f_bb else ("#3fb950" if prix < bb_inf else "#79c0ff")
+        bb_label = "🔴 Au-dessus" if f_bb else ("🟢 En-dessous" if prix < bb_inf else "✅ Dans la bande")
+        with ic2:
+            st.markdown(f"""
+            <div class="ind-box" style="border-color:{bb_color}33">
+              <div class="ind-label">Bollinger · 20, 2</div>
+              <div class="ind-value" style="color:{bb_color}">{bb_pct:.0f}<span style="font-size:.5em">%</span></div>
+              <div class="ind-sub" style="color:#8b949e">{bb_inf:,.0f} · {prix:,.0f} · {bb_sup:,.0f}</div>
+              <div class="ind-sub" style="color:{bb_color}">{bb_label}</div>
+            </div>""", unsafe_allow_html=True)
 
-        # Verrou Graham
-        st.markdown("#### 🔒 Verrou Graham")
-        if survalue:
-            st.markdown(f"""<div class="alert-red">
-            🔒 Titre surévalué — Prix ({prix:,.0f}) > Valeur intrinsèque ({vi:,.0f} FCFA).
-            Marge de sécurité négative. Aucun achat.</div>""", unsafe_allow_html=True)
-        elif sous_marge:
-            st.markdown(f"""<div class="alert-yellow">
-            ⚠️ Sous VI mais hors marge cible — Prix ({prix:,.0f}) entre VI ({vi:,.0f}) et cible
-            ({prix_cible:,.0f} FCFA, marge {MARGE_SECURITE*100:.0f}%). On surveille.</div>""",
-            unsafe_allow_html=True)
+        # EMA20
+        ema_color = "#3fb950" if prix > ema20 else "#f85149"
+        ema_label = "✅ Haussier" if prix > ema20 else "⚠️ Baissier"
+        with ic3:
+            st.markdown(f"""
+            <div class="ind-box" style="border-color:{ema_color}33">
+              <div class="ind-label">EMA · 20</div>
+              <div class="ind-value" style="color:{ema_color}">{ema20:,.0f}</div>
+              <div class="ind-sub" style="color:#8b949e">Écart <b>{ecart_ema:+.1f}%</b></div>
+              <div class="ind-sub" style="color:{ema_color}">{ema_label}</div>
+            </div>""", unsafe_allow_html=True)
+
+        # ── Section : Verrou Graham ───────────────────────────
+        st.markdown("#### 🔒 Valorisation")
+        if survalu:
+            st.markdown(f'<div class="banner banner-red">🔒 Surévalué — Prix {prix:,.0f} FCFA &gt; Valeur intrinsèque {vi:,.0f} FCFA</div>', unsafe_allow_html=True)
+        elif hors_marge:
+            st.markdown(f'<div class="banner banner-yellow">⚠️ Hors marge de sécurité — Prix {prix:,.0f} entre VI {vi:,.0f} et cible {prix_cible:,.0f} FCFA</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f"""<div class="alert-green">
-            ✅ Marge validée ({MARGE_SECURITE*100:.0f}%) — Prix ({prix:,.0f}) &lt;
-            Cible ({prix_cible:,.0f} FCFA). Upside : <b>{upside:.1f}%</b></div>""",
-            unsafe_allow_html=True)
+            st.markdown(f'<div class="banner banner-green">✅ Dans la marge — Prix {prix:,.0f} &lt; Cible {prix_cible:,.0f} FCFA · Potentiel +{upside:.1f}%</div>', unsafe_allow_html=True)
 
-        # Ratios calculés
-        st.markdown("#### 📊 Ratios calculés")
+        # ── Section : Ratios ──────────────────────────────────
+        st.markdown("#### 📊 Ratios fondamentaux")
         r1, r2, r3, r4, r5 = st.columns(5)
+
+        def ratio_box(label, value, sub=""):
+            return f"""<div class="ratio-item">
+            <div class="ratio-label">{label}</div>
+            <div class="ratio-value">{value}</div>
+            {"<div class='ratio-sub'>"+sub+"</div>" if sub else ""}
+            </div>"""
+
         with r1:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">BPA {'(estimé)' if donnees_estimees else ''}</div>
-            <b>{bpa:,.1f} FCFA</b></div>
-            <div class="ratio-box"><div class="label-small">PER</div><b>{per:.1f}x</b>
-            <span class="label-small"> cible: {per_cible:.2f}x</span></div>""",
-            unsafe_allow_html=True)
+            st.markdown(ratio_box("BPA", f"{bpa:,.1f} F") + ratio_box("PER", f"{per:.1f}×", f"cible {PER_SECTORIELS[secteur]:.1f}×"), unsafe_allow_html=True)
         with r2:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">P/B</div><b>{pbr:.2f}x</b></div>
-            <div class="ratio-box"><div class="label-small">Dividende</div>
-            <b>{div_yield*100:.1f}%</b></div>""", unsafe_allow_html=True)
+            st.markdown(ratio_box("P/Book", f"{pbr:.2f}×") + ratio_box("Rend. div.", f"{dy*100:.1f}%"), unsafe_allow_html=True)
         with r3:
             if est_banque:
-                mn_c = "#3fb950" if marge_nette_b >= BENCH_BANQUE["marge_nette_cible"] else "#d29922"
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Marge nette / PNB {'(estimée)' if donnees_estimees else ''}</div>
-                <b style="color:{mn_c}">{marge_nette_b*100:.1f}%</b>
-                <span class="label-small"> cible: {BENCH_BANQUE['marge_nette_cible']*100:.0f}%</span></div>
-                <div class="ratio-box">
-                <div class="label-small">ROE bancaire {'(estimé)' if donnees_estimees else ''}</div>
-                <b>{roe:.1f}%</b>
-                <span class="label-small"> cible: {BENCH_BANQUE['roe_cible']*100:.0f}%</span></div>""",
-                unsafe_allow_html=True)
+                st.markdown(ratio_box("Marge / PNB", f"{marge_b*100:.1f}%") + ratio_box("Crédits / Dépôts", f"{cd_ratio*100:.1f}%"), unsafe_allow_html=True)
             else:
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">ROE {'(estimé)' if donnees_estimees else ''}</div>
-                <b>{roe:.1f}%</b></div>
-                <div class="ratio-box">
-                <div class="label-small">ROA {'(estimé)' if donnees_estimees else ''}</div>
-                <b>{roa:.1f}%</b></div>""", unsafe_allow_html=True)
+                st.markdown(ratio_box("ROE", f"{roe:.1f}%") + ratio_box("ROA", f"{roa:.1f}%"), unsafe_allow_html=True)
         with r4:
-            if est_banque:
-                b = BENCH_BANQUE
-                cd_c = "#f85149" if credits_depots > b["credits_depots_max"] or credits_depots < b["credits_depots_min"] else ("#d29922" if abs(credits_depots - b["credits_depots_opt"]) > 0.15 else "#3fb950")
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Crédits / Dépôts</div>
-                <b style="color:{cd_c}">{credits_depots*100:.1f}%</b>
-                <span class="label-small"> optimal: 70-90%</span></div>
-                <div class="ratio-box">
-                <div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""",
-                unsafe_allow_html=True)
-            else:
-                st.markdown(f"""<div class="ratio-box">
-                <div class="label-small">Dette/CP</div><b>{dette_cp:.2f}x</b></div>
-                <div class="ratio-box">
-                <div class="label-small">Δ BPA</div><b>{croissance_bpa:+.1f}%</b></div>""",
-                unsafe_allow_html=True)
+            st.markdown(ratio_box("N° Graham", f"{graham:,.0f}") + ratio_box("Δ BPA", f"{g_bpa:+.1f}%"), unsafe_allow_html=True)
         with r5:
-            st.markdown(f"""<div class="ratio-box">
-            <div class="label-small">Graham Number</div>
-            <b>{graham_number:,.0f} FCFA</b></div>
-            <div class="ratio-box"><div class="label-small">Valeur intrinsèque</div>
-            <b>{vi:,.0f} FCFA</b></div>""", unsafe_allow_html=True)
+            st.markdown(ratio_box("Val. intrinsèque", f"{vi:,.0f}") + ratio_box("Prix cible", f"{prix_cible:,.0f}", f"marge {MARGE*100:.0f}%"), unsafe_allow_html=True)
 
-        # Signal final
-        couleur_sig = COULEURS.get(signal, "#8b949e")
-        badge_est   = " <span class='badge-estimated'>⚠️ DONNÉES ESTIMÉES</span>" if donnees_estimees else ""
+        # ── Signal final ──────────────────────────────────────
+        score_bar_w = int(score * 100)
+        score_clr   = "#3fb950" if score >= 0.60 else ("#d29922" if score >= 0.40 else "#f85149")
         st.markdown(f"""
-        <div class="card" style="border-left:5px solid {couleur_sig};margin-top:16px">
-        <div class="label-small">Signal de rotation — semaine en cours{badge_est}</div>
-        <div style="font-family:'IBM Plex Mono';font-size:1.5em;color:{couleur_sig};font-weight:700;margin:6px 0">
-            {signal}
-        </div>
-        <div style="color:#8b949e;font-size:0.83em">
-            Score: <b style="color:#e6edf3">{score_final:.3f}</b> &nbsp;|&nbsp;
-            Value: <b style="color:#e6edf3">{value_score:.3f}</b> &nbsp;|&nbsp;
-            Quality: <b style="color:#e6edf3">{quality_score:.3f}</b> &nbsp;|&nbsp;
-            Momentum: <b style="color:#e6edf3">{momentum_score:.3f}</b> &nbsp;|&nbsp;
-            Upside: <b style="color:#e6edf3">{upside:.1f}%</b>
-        </div>
+        <div class="signal-card" style="border-left:4px solid {col_sig}">
+          <div style="color:#8b949e;font-size:.72em;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px">Signal de rotation</div>
+          <div class="signal-main" style="color:{col_sig}">{sig}</div>
+          <div class="score-row">
+            Score global <b style="color:{score_clr}">{score:.3f}</b> &nbsp;·&nbsp;
+            Value <b style="color:#e6edf3">{v_score:.3f}</b> &nbsp;·&nbsp;
+            Quality <b style="color:#e6edf3">{q_score:.3f}</b> &nbsp;·&nbsp;
+            Momentum <b style="color:#e6edf3">{m_score:.3f}</b> &nbsp;·&nbsp;
+            Upside <b style="color:{('#3fb950' if upside > 15 else '#d29922') if upside > 0 else '#f85149'}">{upside:.1f}%</b>
+          </div>
+          <div style="background:#1e2633;border-radius:4px;height:4px;margin-top:10px;overflow:hidden">
+            <div style="background:{score_clr};width:{score_bar_w}%;height:100%;border-radius:4px;transition:width .5s"></div>
+          </div>
         </div>""", unsafe_allow_html=True)
 
-        # Enregistrement
-        st.session_state.actions.append({
-            "Titre":              titre,
-            "Secteur":            secteur,
-            "🏦 Bancaire":        "✅" if est_banque else "—",
-            "Période":            f"{periode_donnees} {annee_donnees}",
-            "Confiance":          confiance,
-            "Prix (FCFA)":        round(prix, 0),
-            "BPA":                round(bpa, 1),
-            "PER":                round(per, 1),
-            "P/B":                round(pbr, 2),
-            "ROE (%)":            round(roe, 1),
-            "ROA (%)":            round(roa, 1) if roa is not None else "—",
-            "D/CP":               round(dette_cp, 2) if dette_cp is not None else "N/A",
-            "Marge nette/PNB":    f"{marge_nette_b*100:.1f}%" if est_banque else "—",
-            "Crédits/Dépôts":     f"{credits_depots*100:.1f}%" if est_banque else "—",
-            "ΔBPA (%)":           round(croissance_bpa, 1),
-            "RSI":                round(rsi, 1),
-            "BB%":                round(bb_pct, 1),
-            "vs EMA20 (%)":       round(ecart_ma, 1),
-            "Graham Number":      round(graham_number, 0),
-            "Valeur intrinseque": round(vi, 0),
-            "Prix cible":         round(prix_cible, 0),
-            "Upside (%)":         round(upside, 1),
-            "Score Value":        round(value_score, 3),
-            "Score Quality":      round(quality_score, 3),
-            "Score Momentum":     round(momentum_score, 3),
-            "Score Final":        round(score_final, 3),
-            "Filtre RSI":         "🔴 Bloqué" if filtre_rsi else "✅ OK",
-            "Filtre BB":          "🔴 Bloqué" if filtre_bb_sup else "✅ OK",
-            "Graham":             "🔴 Hors marge" if survalue else ("🟡 Sous marge" if sous_marge else "✅ OK"),
-            "Signal":             signal,
+        # ── Ajout screener ────────────────────────────────────
+        st.session_state.screener.append({
+            "Titre": titre.upper(), "Secteur": secteur,
+            "Bancaire": "✅" if est_banque else "—",
+            "Période": f"{periode} {annee}", "Confiance": conf,
+            "Cours auto": "✅" if "prix" in mdata else "—",
+            "Prix": round(prix, 0), "BPA": round(bpa, 1), "PER": round(per, 1),
+            "P/B": round(pbr, 2), "ROE%": round(roe, 1),
+            "ROA%": round(roa, 1) if roa else "—",
+            "D/CP": round(dette_cp, 2) if dette_cp else "—",
+            "Marge/PNB": f"{marge_b*100:.1f}%" if est_banque else "—",
+            "Crd/Dep": f"{cd_ratio*100:.1f}%" if est_banque else "—",
+            "RSI": round(rsi, 1), "BB%": round(bb_pct, 1), "vs EMA%": round(ecart_ema, 1),
+            "VI": round(vi, 0), "Cible": round(prix_cible, 0), "Upside%": round(upside, 1),
+            "Value": round(v_score, 3), "Quality": round(q_score, 3),
+            "Momentum": round(m_score, 3), "Score": round(score, 3), "Signal": sig,
         })
-        st.success(f"✅ **{titre}** enregistré.")
+        st.success(f"✅ {titre.upper()} ajouté au screener.")
 
-# ==========================================================
-# TAB 2 — TABLEAU DE BORD
-# ==========================================================
+# ══════════════════════════════════════════════════════════════════
+# TAB 2 — DASHBOARD
+# ══════════════════════════════════════════════════════════════════
 with tab2:
-    if not st.session_state.actions:
-        st.info("Aucun titre analysé. Commencez par l'onglet **➕ Analyser un titre**.")
+    if not st.session_state.screener:
+        st.markdown("""
+        <div class="card" style="text-align:center;padding:40px;color:#8b949e">
+            <div style="font-size:2em;margin-bottom:8px">📊</div>
+            <div style="font-family:'Space Mono',monospace">Aucun titre analysé</div>
+            <div style="font-size:.85em;margin-top:4px">Commencez par l'onglet ➕ Analyser</div>
+        </div>""", unsafe_allow_html=True)
     else:
-        df = pd.DataFrame(st.session_state.actions)
-        df = df.sort_values("Score Final", ascending=False).reset_index(drop=True)
+        df = pd.DataFrame(st.session_state.screener).sort_values("Score", ascending=False).reset_index(drop=True)
 
+        # ── KPIs ────────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Titres analysés",   len(df))
-        k2.metric("Signaux ACHAT",     len(df[df["Signal"].str.contains("ACHAT", na=False)]))
-        k3.metric("Titres bloqués 🔴", len(df[df["Signal"].str.startswith("🔴", na=False)]))
-        k4.metric("Données estimées ⚠️", len(df[df["Confiance"] != "Annuelle"]))
+        nb_achat   = len(df[df["Signal"].str.contains("ACHAT", na=False)])
+        nb_bloque  = len(df[df["Signal"].str.startswith("🔴", na=False)])
+        nb_auto    = len(df[df["Cours auto"] == "✅"])
 
-        st.markdown("---")
-        cols = ["Titre", "Secteur", "🏦 Bancaire", "Période", "Confiance",
-                "Prix (FCFA)", "PER", "P/B", "ROE (%)", "ROA (%)", "D/CP",
-                "Marge nette/PNB", "Crédits/Dépôts",
-                "RSI", "BB%", "vs EMA20 (%)",
-                "Valeur intrinseque", "Prix cible", "Upside (%)",
-                "Score Final", "Filtre RSI", "Filtre BB", "Graham", "Signal"]
+        for col, val, label, icon in [
+            (k1, len(df),      "Titres",         "⬡"),
+            (k2, nb_achat,     "Signaux ACHAT",  "🟢"),
+            (k3, nb_bloque,    "Bloqués",        "🔴"),
+            (k4, nb_auto,      "Cours auto",     "✅"),
+        ]:
+            with col:
+                st.markdown(f"""
+                <div class="card" style="text-align:center;padding:16px">
+                    <div style="font-size:1.6em;font-family:'Space Mono',monospace;font-weight:700;color:#e6edf3">{val}</div>
+                    <div style="font-size:.75em;color:#8b949e;text-transform:uppercase;letter-spacing:.8px;margin-top:2px">{icon} {label}</div>
+                </div>""", unsafe_allow_html=True)
 
+        # ── Tableau ─────────────────────────────────────────────
+        def _cs(v):
+            try:
+                v = float(v)
+                if v >= .60: return "background-color:#0d1f12;color:#3fb950"
+                if v >= .45: return "background-color:#1a1400;color:#e3b341"
+                return "background-color:#1f0d0d;color:#f85149"
+            except: return ""
+
+        def _cu(v):
+            try:
+                v = float(v)
+                if v >= 20: return "background-color:#0d1f12;color:#3fb950"
+                if v >= 5:  return "background-color:#1a1400;color:#e3b341"
+                return "background-color:#1f0d0d;color:#f85149"
+            except: return ""
+
+        cols_show = ["Titre", "Secteur", "Cours auto", "Prix", "PER", "P/B", "ROE%",
+                     "RSI", "BB%", "vs EMA%", "VI", "Cible", "Upside%", "Score", "Signal"]
         st.dataframe(
-            df[cols].style
-                .background_gradient(subset=["Score Final"], cmap="RdYlGn")
-                .background_gradient(subset=["Upside (%)"], cmap="RdYlGn")
-                .background_gradient(subset=["RSI"], cmap="RdYlGn_r"),
-            use_container_width=True, height=420
-        )
+            df[cols_show].style
+                .applymap(_cs, subset=["Score"])
+                .applymap(_cu, subset=["Upside%"]),
+            use_container_width=True, height=420)
 
+        # ── Cartes récap ─────────────────────────────────────
         st.markdown("---")
-        st.subheader("🔄 Signaux de rotation")
-
         for _, row in df.iterrows():
-            signal  = row["Signal"]
-            couleur = COULEURS.get(signal, "#8b949e")
-            badge_rsi = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>RSI</span>" if row["Filtre RSI"] == "🔴 Bloqué" else ""
-            badge_bb  = " <span style='background:#f85149;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>BB</span>"  if row["Filtre BB"] == "🔴 Bloqué" else ""
-            badge_g   = " <span style='background:#d29922;color:white;padding:1px 6px;border-radius:8px;font-size:0.72em'>GRAHAM</span>" if row["Graham"] != "✅ OK" else ""
-            badge_est = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;padding:1px 6px;border-radius:8px;font-size:0.72em'>ESTIMÉ</span>" if row["Confiance"] != "Annuelle" else ""
-            badge_bq  = " <span style='background:#1f3a5f;color:#79c0ff;border:1px solid #79c0ff;padding:1px 6px;border-radius:8px;font-size:0.72em'>🏦</span>" if row["🏦 Bancaire"] == "✅" else ""
-
+            sig = row["Signal"]
+            col = SIGNAL_COLORS.get(sig, "#8b949e")
+            rsi_c = "#f85149" if row["RSI"] > RSI_HAUT else ("#3fb950" if row["RSI"] < RSI_BAS else "#8b949e")
             st.markdown(f"""
-            <div class="card" style="border-left:4px solid {couleur}">
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div class="card" style="border-left:3px solid {col};padding:14px 20px">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
                 <div>
-                    <span style="font-family:'IBM Plex Mono';font-weight:700;color:#e6edf3;font-size:1.05em">{row['Titre']}</span>
-                    {badge_rsi}{badge_bb}{badge_g}{badge_est}{badge_bq}
-                    <span style="color:#8b949e;font-size:0.82em;margin-left:10px">{row['Secteur']}</span><br>
-                    <span style="color:#8b949e;font-size:0.78em">{row['Période']}</span>
+                  <span style="font-family:'Space Mono',monospace;font-weight:700;font-size:1.05em;color:#e6edf3">{row['Titre']}</span>
+                  <span style="color:#8b949e;margin-left:10px;font-size:.85em">{row['Secteur']} · {row['Période']}</span><br>
+                  <span class="pill">RSI <span style="color:{rsi_c}">{row['RSI']}</span></span>
+                  <span class="pill">BB {row['BB%']:.0f}%</span>
+                  <span class="pill">EMA {row['vs EMA%']:+.1f}%</span>
+                  <span class="pill">PER {row['PER']}</span>
                 </div>
                 <div style="text-align:right">
-                    <span style="color:{couleur};font-weight:700;font-size:1.1em">{signal}</span><br>
-                    <span style="color:#8b949e;font-size:0.8em">
-                        Score: <b style="color:#e6edf3">{row['Score Final']:.3f}</b> &nbsp;|&nbsp;
-                        Upside: <b style="color:#e6edf3">{row['Upside (%)']:.1f}%</b> &nbsp;|&nbsp;
-                        RSI: <b style="color:#e6edf3">{row['RSI']}</b>
-                    </span>
+                  <div style="color:{col};font-family:'Space Mono',monospace;font-weight:700;font-size:1.05em">{sig}</div>
+                  <div style="font-size:.75em;color:#8b949e;font-family:'Space Mono',monospace;margin-top:3px">
+                    Score <b style="color:#e6edf3">{row['Score']}</b> · Upside <b style="color:#e6edf3">{row['Upside%']}%</b>
+                  </div>
                 </div>
-            </div>
+              </div>
             </div>""", unsafe_allow_html=True)
 
-        st.markdown("---")
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Screener BRVM")
-        st.download_button("⬇️ Exporter en Excel", output.getvalue(), "Screener_BRVM.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True)
+        # ── Export ───────────────────────────────────────────
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            df.to_excel(w, index=False, sheet_name="BRVM")
+        st.download_button("⬇️ Exporter Excel", buf.getvalue(), "screener_brvm.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           use_container_width=True)
 
-# ==========================================================
-# TAB 3 — MÉTHODOLOGIE
-# ==========================================================
+# ══════════════════════════════════════════════════════════════════
+# TAB 3 — FONDAMENTAUX SAUVEGARDÉS
+# ══════════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader("📖 Méthodologie")
+    fonds = list_fonds()
+    if not fonds:
+        st.markdown("""
+        <div class="card" style="text-align:center;padding:40px;color:#8b949e">
+            <div style="font-size:2em">💾</div>
+            <div style="font-family:'Space Mono',monospace;margin-top:6px">Aucun fondamental sauvegardé</div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<span class='pill pill-green'>{len(fonds)} titre(s) en base</span> — pré-remplis automatiquement à la prochaine analyse.", unsafe_allow_html=True)
+        st.markdown("")
+        for s in fonds:
+            f = load_fond(s["ticker"])
+            if not f: continue
+            with st.expander(f"**{s['ticker']}** — {s['secteur']} — màj {s['maj_at']}"):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.write(f"**Secteur** : {f.get('secteur','—')}")
+                    st.write(f"**Période** : {f.get('periode','—')} {f.get('annee','')}")
+                    st.write(f"**Actions** : {f.get('nombre_actions','—')} M")
+                    st.write(f"**Dividende** : {f.get('dividende','—')} FCFA")
+                    st.write(f"**BPA préc.** : {f.get('bpa_prec','—')} FCFA")
+                with c2:
+                    if f.get("est_banque"):
+                        st.write(f"🏦 **PNB** : {f.get('pnb','—')} M")
+                        st.write(f"**RN** : {f.get('resultat_b','—')} M")
+                        st.write(f"**Crédits** : {f.get('encours_credits','—')} M")
+                        st.write(f"**Dépôts** : {f.get('depots_clientele','—')} M")
+                    else:
+                        st.write(f"**RN** : {f.get('resultat','—')} M")
+                        st.write(f"**CP** : {f.get('capitaux_propres','—')} M")
+                        st.write(f"**Actif** : {f.get('total_actif','—')} M")
+                        st.write(f"**Dettes** : {f.get('dettes_totales','—')} M")
+                with c3:
+                    if st.button(f"🗑️ Supprimer", key=f"del_{s['ticker']}"):
+                        del_fond(s["ticker"]); st.success("Supprimé"); st.rerun()
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 4 — MÉTHODE
+# ══════════════════════════════════════════════════════════════════
+with tab4:
     st.markdown("""
-    ### Logique globale du modèle
+### Architecture fetch v5.0
 
-    ```
-    [FILTRE 1] RSI > seuil surachat     → 🔴 BLOQUÉ
-    [FILTRE 2] Prix > BB supérieure     → 🔴 BLOQUÉ
-    [FILTRE 3] Prix > Valeur intrinsèque → 🔴 HORS MARGE
-    [FILTRE 4] Prix > Prix cible (marge) → 🟡 SURVEILLER
-    [SCORE]    Value + Quality + Momentum → Signal final
-    ```
+```
+Cours (cascade, 1er succès) :
+  1. richbourse.com/common/variation/index   — données J
+  2. brvm.org/fr/cours-actions/0             — officiel BRVM
+  3. sikafinance.com/marches/aaz             — agrégateur
 
-    ---
-    ### Score Quality — différence bancaire / standard
+Indicateurs techniques (richbourse historique) :
+  richbourse.com/common/variation/historique/TICKER
+  → Parsing HTML table → DataFrame [date, close]
+  → BB(20,2)  : mid ± 2σ sur 20 séances
+  → EMA(20)   : moyenne exponentielle span=20
+  → RSI(14)   : gains/pertes moyens sur 14 séances
+  Minimum : 20 bougies — saisie manuelle si indispo
+```
 
-    | Critère | Standard | Bancaire |
-    |---|---|---|
-    | Rentabilité | ROE (35%) | ROE (25%) |
-    | Efficacité actif | ROA (30%) | Marge nette/PNB (45%) |
-    | Levier / Structure | Dette/CP (25%) | Crédits/Dépôts (30%) |
-    | Stabilité | Bonus stabilité (10%) | — |
+### Logique de scoring
 
-    **Pourquoi la marge nette/PNB plutôt que le coefficient d'exploitation pour les banques BRVM ?**
-    Le coefficient d'exploitation (Charges/PNB) nécessite les charges générales qui ne sont pas
-    toujours publiées dans les rapports intermédiaires BRVM. La marge nette (RN/PNB) est
-    calculable avec uniquement PNB et Résultat net — les deux données systématiquement disponibles.
+```
+[FILTRE 1] RSI > seuil      → 🔴 BLOQUÉ RSI
+[FILTRE 2] Prix > BB sup    → 🔴 BLOQUÉ BB
+[FILTRE 3] Prix > VI        → 🔴 SURÉVALUÉ
+[FILTRE 4] Prix > Cible     → 🟡 HORS MARGE
 
-    ---
-    ### Taux DCF par secteur
+Score = Value×w + Quality×w + Momentum×w
+  Value    : PER, P/Book, rendement dividende
+  Quality  : ROE, ROA, dette/CP | marge PNB, Crd/Dep (banques)
+  Momentum : Δ BPA YoY + variation cours 1 semaine
+```
 
-    | Secteur | Taux suggéré | Justification |
-    |---|---|---|
-    | Télécommunications | 11% | Flux stables, visibilité élevée |
-    | Services Financiers | 11% | Modèle régulé, risque modéré |
-    | Services Publics | 11% | Revenus contractuels |
-    | Consommation de base | 12% | Demande stable mais marché |
-    | Énergie | 13% | Cyclicité des matières premières |
-    | Consommation discrétionnaire | 13% | Sensibilité au cycle économique |
-    | Industriels | 14% | Cyclicité élevée, carnet de commandes |
+### Valeur intrinsèque (3 méthodes combinées)
 
-    Base : Taux sans risque UEMOA (~5.5%) + prime de risque BRVM (~6-8%)
+```
+VI  = Graham(40%) + Fair Value PER(35%) + DCF(25%)
+    — Graham   : √(22.5 × BPA × Book Value)
+    — PER cible: BPA × PER sectoriel BRVM
+    — DCF      : actualisation sur 5 ans + valeur terminale
 
-    ---
-    ### Extrapolation des données intermédiaires
+Prix cible = VI × (1 − marge de sécurité)
+```
 
-    **9 mois :** Résultat annuel = 9M × 4/3 — confiance élevée (75% de l'exercice connu)
+### Installation
 
-    **Semestriel :** Résultat annuel = S1 ÷ facteur saisonnalité sectoriel
-    Les banques UEMOA ont un facteur S1 = 0.48 (légèrement back-loaded : les provisions
-    de fin d'année sont typiquement plus élevées au S2).
-    """)
+```bash
+pip install streamlit pandas numpy requests beautifulsoup4 openpyxl lxml
+streamlit run screener_brvm_v5.py
+```
+""")
