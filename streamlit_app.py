@@ -1,7 +1,12 @@
 """
-Screener BRVM v5.0
-Cours      : richbourse → brvm.org → sikafinance
-Indicateurs: richbourse historique → calc BB(20,2) + EMA(20) + RSI(14)
+Screener BRVM v6.0
+Cours        : richbourse → brvm.org → sikafinance
+Indicateurs  : richbourse historique → BB(20,2) + EMA(20) + RSI(14) + var_3m + vol_moy_20j
+Stratégie    : Value 25% / Quality 40% / Momentum 35%
+               Marge sécurité variable par quality score
+               Momentum = accélération BPA + variation 3 mois
+               Signal plafonné SURVEILLER si Quality < 0.40
+               Liquidité : alerte si volume moyen 20j insuffisant
 """
 
 import streamlit as st
@@ -248,6 +253,15 @@ SECTEUR_EMOJI = {
 PER_SECTORIELS  = {"Télécommunications": 10.11, "Consommation discrétionnaire": 72.48,
                    "Services Financiers": 11.08, "Consommation de base": 14.80,
                    "Industriels": 22.23, "Énergie": 17.63, "Services Publics": 17.65}
+
+# P/Book sectoriel calibré BRVM — seuil d'acceptabilité, pas moyenne de marché
+# Banques : faible levier historique BRVM → 1.2x raisonnable
+# Télécoms : actifs immatériels dominants → 3.5x acceptable
+# Conso discrétionnaire : volatile, PBR élevé souvent injustifié → 2.0x
+PBR_SECTORIELS  = {"Télécommunications": 3.50, "Consommation discrétionnaire": 2.00,
+                   "Services Financiers": 1.20, "Consommation de base": 2.50,
+                   "Industriels": 1.80, "Énergie": 2.00, "Services Publics": 1.50}
+
 TAUX_DCF        = {"Télécommunications": 0.11, "Consommation discrétionnaire": 0.13,
                    "Services Financiers": 0.11, "Consommation de base": 0.12,
                    "Industriels": 0.14, "Énergie": 0.13, "Services Publics": 0.11}
@@ -260,7 +274,7 @@ SIGNAL_COLORS = {
     "🟡 SURVEILLER": "#d29922", "🟠 ALLÉGER": "#ffa657",
     "🔴 SORTIR": "#f85149",     "🔴 BLOQUÉ RSI": "#f85149",
     "🔴 BLOQUÉ BB": "#f85149",  "🔴 SURÉVALUÉ": "#f85149",
-    "🟡 HORS MARGE": "#d29922",
+    "🟡 HORS MARGE": "#d29922", "🟡 LIQUIDITÉ FAIBLE": "#d29922",
 }
 
 HEADERS = {
@@ -280,10 +294,16 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS fondamentaux (
         ticker TEXT PRIMARY KEY, secteur TEXT, periode TEXT, annee TEXT,
         est_banque INTEGER DEFAULT 0, nombre_actions REAL, dividende REAL,
-        bpa_prec REAL, capitaux_propres REAL, resultat REAL,
+        bpa_prec REAL, bpa_n2 REAL, capitaux_propres REAL, resultat REAL,
         total_actif REAL, dettes_totales REAL, stabilite_bpa TEXT,
         pnb REAL, resultat_b REAL, encours_credits REAL, depots_clientele REAL,
         maj_at TEXT)""")
+    # Migration douce : ajouter bpa_n2 si absent (base existante)
+    try:
+        conn.execute("ALTER TABLE fondamentaux ADD COLUMN bpa_n2 REAL")
+        conn.commit()
+    except Exception:
+        pass
     conn.commit()
     return conn
 
@@ -444,7 +464,7 @@ def _parse_historique_html(html: str) -> pd.DataFrame:
     Parse la table historique richbourse.
     Colonnes confirmées (2026-03) :
       Date | Variation(%) | Valeur(FCFA) | Cours ajusté | Volume ajusté | Cours normal | Volume normal
-    On utilise 'Cours ajusté' (index 3) comme close.
+    On utilise 'Cours ajusté' (index 3) et 'Volume ajusté' (index 4).
     """
     if not HAS_BS4:
         return pd.DataFrame()
@@ -457,13 +477,17 @@ def _parse_historique_html(html: str) -> pd.DataFrame:
     if len(rows) < 2:
         return pd.DataFrame()
 
-    # Détecter l'index de la colonne "cours ajusté" depuis le header
+    # Détecter les indices depuis le header
     header_cells = [th.get_text(strip=True).lower().replace("\xa0","").replace(" ","")
                     for th in rows[0].find_all(["th","td"])]
-    # Priorité : "coursajusté" → "coursnormal" → index 3 (fallback)
+
     idx_close = next(
         (i for i, h in enumerate(header_cells) if "ajust" in h and "cours" in h),
         next((i for i, h in enumerate(header_cells) if "normal" in h and "cours" in h), 3)
+    )
+    idx_vol = next(
+        (i for i, h in enumerate(header_cells) if "ajust" in h and "vol" in h),
+        next((i for i, h in enumerate(header_cells) if "vol" in h), 4)
     )
 
     data = []
@@ -473,27 +497,24 @@ def _parse_historique_html(html: str) -> pd.DataFrame:
             continue
         date_txt  = cells[0].get_text(strip=True)
         close_txt = cells[idx_close].get_text(strip=True)
-        data.append([date_txt, close_txt])
+        vol_txt   = cells[idx_vol].get_text(strip=True) if len(cells) > idx_vol else "0"
+        data.append([date_txt, close_txt, vol_txt])
 
     if not data:
         return pd.DataFrame()
 
-    df = pd.DataFrame(data, columns=["date", "close"])
-    df["date"]  = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
-    df["close"] = pd.to_numeric(
-        df["close"].str.replace(r"[\xa0\s,]", "", regex=True)
-                   .str.replace(r"\.", "", regex=True)   # séparateur milliers
-                   .str.replace(",", ".", regex=False),
-        errors="coerce")
-    # Si toutes les valeurs sont NaN, les nombres étaient peut-être sans séparateur
-    if df["close"].isna().all():
-        df["close"] = pd.to_numeric(
-            df["close_raw"] if "close_raw" in df else
-            pd.Series([c[1] for c in data])
-              .str.replace(r"[\xa0\s]", "", regex=True)
-              .str.replace(",", ".", regex=False),
+    def _clean_num(series):
+        return pd.to_numeric(
+            series.str.replace(r"[\xa0\s]", "", regex=True)
+                  .str.replace(r"\s", "", regex=True),
             errors="coerce")
-    return df.dropna()
+
+    df = pd.DataFrame(data, columns=["date", "close", "volume"])
+    df["date"]   = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+    df["close"]  = _clean_num(df["close"])
+    df["volume"] = _clean_num(df["volume"])
+
+    return df.dropna(subset=["date", "close"])
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -560,7 +581,7 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
 
 def calc_indicateurs(df: pd.DataFrame) -> dict:
     """
-    Calcule BB(20,2), EMA(20), RSI(14) depuis l'historique.
+    Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j depuis l'historique.
     Nécessite au minimum 20 bougies.
     """
     if df.empty or len(df) < 20:
@@ -570,15 +591,14 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
     # EMA 20
     ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
 
-    # RSI 14 (méthode Wilder SMA initiale → RMA)
+    # RSI 14
     delta    = close.diff()
     gain     = delta.clip(lower=0)
     loss     = -delta.clip(upper=0)
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
     rs       = avg_gain / avg_loss
-    rsi_ser  = 100 - (100 / (1 + rs))
-    rsi_val  = rsi_ser.iloc[-1]
+    rsi_val  = (100 - (100 / (1 + rs))).iloc[-1]
 
     # Bollinger Bands (20, 2)
     bb_mid = close.rolling(20).mean().iloc[-1]
@@ -586,17 +606,27 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
     bb_sup = bb_mid + 2 * bb_std
     bb_inf = bb_mid - 2 * bb_std
 
-    # Variation 1 semaine
-    var_1s = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(close) >= 6 else 0.0
+    # Variation 3 mois (~63 séances de trading)
+    nb = len(close)
+    lookback_3m = min(63, nb - 1)
+    var_3m = (close.iloc[-1] / close.iloc[-lookback_3m - 1] - 1) * 100 if lookback_3m > 0 else 0.0
+
+    # Volume moyen 20j
+    vol_moy_20j = 0.0
+    if "volume" in df.columns:
+        vols = pd.to_numeric(df["volume"], errors="coerce").dropna()
+        if len(vols) >= 5:
+            vol_moy_20j = float(vols.tail(20).mean())
 
     return {
-        "rsi":    round(rsi_val, 1),
-        "ema20":  round(ema20, 0),
-        "bb_sup": round(bb_sup, 0),
-        "bb_inf": round(bb_inf, 0),
-        "bb_mid": round(bb_mid, 0),
-        "var_1s": round(var_1s, 2),
-        "nb_pts": len(close),
+        "rsi":        round(rsi_val, 1),
+        "ema20":      round(ema20, 0),
+        "bb_sup":     round(bb_sup, 0),
+        "bb_inf":     round(bb_inf, 0),
+        "bb_mid":     round(bb_mid, 0),
+        "var_3m":     round(var_3m, 2),
+        "vol_moy_20j": round(vol_moy_20j, 0),
+        "nb_pts":     nb,
     }
 
 
@@ -628,17 +658,75 @@ def extrapoler(resultat, periode, secteur):
     return resultat, "Données annuelles", "Annuelle"
 
 def vi_dcf(bpa, g_bpa, taux):
+    """
+    DCF sur 5 ans + valeur terminale (Gordon-Shapiro).
+    g1 borné à [-10%, +20%] pour éviter les extrapolations extrêmes.
+    g2 (croissance perpétuelle) = 3% — cohérent avec croissance UEMOA long terme.
+    """
     g1 = min(max(g_bpa / 100, -0.10), 0.20)
     g2, r = 0.03, taux
     flux = sum(bpa * (1 + g1) ** t / (1 + r) ** t for t in range(1, 6))
     vt   = bpa * (1 + g1) ** 5 * (1 + g2) / (r - g2) / (1 + r) ** 5
     return flux + vt
 
-def calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb):
+
+def vi_graham_sectoriel(bpa, val_book, secteur):
+    """
+    Graham recalibré BRVM : √(PER_sect × PBR_sect × BPA × Book).
+    Remplace le 22.5 universel (calibré NYSE années 70) par des
+    plafonds sectoriels BRVM. Résultat : garde-fou cohérent avec
+    les niveaux de valorisation réels du marché.
+    """
+    per_s = PER_SECTORIELS.get(secteur, 15.0)
+    pbr_s = PBR_SECTORIELS.get(secteur, 1.5)
+    return np.sqrt(max(per_s * pbr_s * bpa * val_book, 0)) if bpa > 0 else 0
+
+
+def calc_vi(bpa, val_book, secteur, g_bpa, taux_actua):
+    """
+    Valeur intrinsèque recalibrée — 3 méthodes, poids optimisés :
+
+      FV_PER  50% — ancre principale : BPA × PER sectoriel BRVM
+                    capture le niveau de valorisation "normal" du secteur
+      DCF     35% — ancre fondamentale : flux actualisés sur 5 ans
+                    capte la croissance et la qualité du business
+      Graham  15% — garde-fou : cohérence PER × P/Book sectoriel
+                    évite les valorisations déconnectées du bilan
+                    (réduit de 40% → 15% : évite la domination d'une
+                     formule calibrée pour le NYSE des années 70)
+
+    Fallback : si Graham = 0 (BPA ≤ 0), VI = FV_PER×60% + DCF×40%.
+    """
+    fv_per   = bpa * PER_SECTORIELS.get(secteur, 15.0) if bpa > 0 else 0
+    fv_dcf   = vi_dcf(bpa, g_bpa, taux_actua) if bpa > 0 else 0
+    graham   = vi_graham_sectoriel(bpa, val_book, secteur)
+
+    if graham > 0:
+        vi = fv_per * 0.50 + fv_dcf * 0.35 + graham * 0.15
+    else:
+        vi = fv_per * 0.60 + fv_dcf * 0.40
+
+    return vi, fv_per, fv_dcf, graham
+
+QUALITY_FLOOR = 0.40   # en dessous → signal plafonné à SURVEILLER
+VOL_MIN_FCFA  = 1_000_000  # volume moyen minimum en FCFA (valeur × volume)
+
+def marge_variable(q_score: float) -> float:
+    """Marge de sécurité dynamique selon la qualité du titre."""
+    if q_score >= 0.70:  return 0.10
+    if q_score >= 0.50:  return 0.15
+    return 0.20
+
+def calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb, q_score, f_liquidite=False):
     if f_rsi:                              return "🔴 BLOQUÉ RSI"
     if f_bb:                               return "🔴 BLOQUÉ BB"
+    if f_liquidite:                        return "🟡 LIQUIDITÉ FAIBLE"
     if survalu:                            return "🔴 SURÉVALUÉ"
     if hors_marge:                         return "🟡 HORS MARGE"
+    # Quality floor — même un bon score ne passe pas si la qualité est insuffisante
+    if q_score < QUALITY_FLOOR:
+        if score >= 0.40 and upside > 5:   return "🟡 SURVEILLER"
+        return "🟠 ALLÉGER"
     if score >= 0.65 and upside > 25:      return "🟢 FORT ACHAT"
     if score >= 0.50 and upside > 15:      return "🔵 ACHAT"
     if score >= 0.40 and upside > 5:       return "🟡 SURVEILLER"
@@ -659,19 +747,30 @@ with st.sidebar:
     mode_simple = st.radio("Mode", ["Simple", "Expert"], horizontal=True) == "Simple"
 
     if mode_simple:
-        W_V, W_Q, W_M = 0.35, 0.40, 0.25
+        # Profil Value-Momentum actif, horizon 1–3 ans
+        W_V, W_Q, W_M = 0.25, 0.40, 0.35
     else:
         st.markdown("**Pondérations du score**")
-        W_V = st.slider("Value",    0.1, 0.6, 0.30, 0.05)
+        W_V = st.slider("Value",    0.1, 0.6, 0.25, 0.05)
         W_Q = st.slider("Quality",  0.1, 0.6, 0.40, 0.05)
-        W_M = st.slider("Momentum", 0.1, 0.6, 0.30, 0.05)
+        W_M = st.slider("Momentum", 0.1, 0.6, 0.35, 0.05)
         T   = W_V + W_Q + W_M; W_V /= T; W_Q /= T; W_M /= T
+        st.caption(f"V {W_V:.0%} · Q {W_Q:.0%} · M {W_M:.0%}")
 
     st.markdown("---")
     st.markdown("**Filtres techniques**")
-    RSI_HAUT = st.slider("RSI surachat",   60, 80, 70, 5)
-    RSI_BAS  = st.slider("RSI survente",   20, 40, 30, 5)
-    MARGE    = st.slider("Marge sécurité (%)", 5, 30, 20, 5) / 100
+    RSI_HAUT = st.slider("RSI surachat", 65, 85, 75, 5)
+    RSI_BAS  = st.slider("RSI survente", 15, 35, 25, 5)
+
+    st.markdown("**Marge de sécurité**")
+    st.markdown("""
+    <div style='font-size:.75em;color:#8b949e;background:#0d1117;border:1px solid #1e2633;
+                border-radius:6px;padding:8px 10px;font-family:Space Mono,monospace'>
+    Dynamique selon Quality :<br>
+    Quality ≥ 0.70 → <span style='color:#3fb950'>10%</span><br>
+    Quality 0.50–0.70 → <span style='color:#d29922'>15%</span><br>
+    Quality &lt; 0.50 → <span style='color:#f85149'>20%</span>
+    </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
     if st.button("🗑️ Vider cache cours"):
@@ -848,6 +947,9 @@ with tab1:
             with b3:
                 dividende = st.number_input("Dividende/action (FCFA)", min_value=0.0, value=fd("dividende", 0.0))
                 bpa_prec  = st.number_input("BPA an préc. (FCFA)",     value=fd("bpa_prec", 80.0))
+            bpa_n2 = st.number_input("BPA N-2 (FCFA) — pour accélération",
+                                      value=fd("bpa_n2", 0.0),
+                                      help="BPA il y a 2 exercices")
             total_actif = dettes_totales = stabilite_bpa = None
         else:
             st.markdown("**📊 Compte de résultat**")
@@ -870,6 +972,15 @@ with tab1:
             with b1: capitaux_propres = st.number_input("Cap. propres (M FCFA)", min_value=1.0, value=fd("capitaux_propres", 2000.0))
             with b2: total_actif      = st.number_input("Total actif (M FCFA)",  min_value=1.0, value=fd("total_actif", 5000.0))
             with b3: dettes_totales   = st.number_input("Dettes fin. (M FCFA)",  min_value=0.0, value=fd("dettes_totales", 1000.0))
+
+            st.markdown("**📈 Historique BPA**")
+            hp1, hp2, hp3 = st.columns(3)
+            with hp1: bpa_n2   = st.number_input("BPA N-2 (FCFA)", value=fd("bpa_n2", 0.0),
+                                                  help="BPA il y a 2 exercices — pour calculer l'accélération")
+            with hp2: bpa_prec = st.number_input("BPA N-1 (FCFA)", value=fd("bpa_prec", 80.0))
+            with hp3: st.markdown("""<div style='background:#0d1117;border:1px solid #1e2633;border-radius:8px;
+                                      padding:10px;font-size:.75em;color:#8b949e;margin-top:22px'>
+                                      BPA N = calculé<br>automatiquement</div>""", unsafe_allow_html=True)
             pnb = encours_credits = depots = None
 
         # ── Indicateurs techniques ─────────────────────────────
@@ -890,8 +1001,10 @@ with tab1:
             bb_sup = st.number_input("BB supérieure (20,2)", min_value=1.0, value=float(mdata.get("bb_sup", 1100.0)))
             bb_inf = st.number_input("BB inférieure (20,2)", min_value=1.0, value=float(mdata.get("bb_inf", 900.0)))
         with t2:
-            ema20  = st.number_input("EMA 20",           min_value=1.0, value=float(mdata.get("ema20", 980.0)))
-            var_1s = st.number_input("Variation 1 sem. (%)", -30.0, 30.0, float(mdata.get("var_1s", 0.0)))
+            ema20  = st.number_input("EMA 20", min_value=1.0, value=float(mdata.get("ema20", 980.0)))
+            var_3m = st.number_input("Variation 3 mois (%)", -50.0, 100.0,
+                                     float(mdata.get("var_3m", 0.0)),
+                                     help="Momentum 3 mois — signal tendance")
         with t3:
             rsi = st.number_input("RSI (14)", 0.0, 100.0, float(mdata.get("rsi", 50.0)))
             st.markdown(f"""
@@ -899,6 +1012,19 @@ with tab1:
             <div style='color:#8b949e;margin-bottom:4px'>SEUILS RSI</div>
             <span style='color:#f85149'>▲ Surachat {RSI_HAUT}</span><br>
             <span style='color:#3fb950'>▼ Survente {RSI_BAS}</span>
+            </div>""", unsafe_allow_html=True)
+
+        # Liquidité affichée hors form
+        vol_20j = mdata.get("vol_moy_20j", 0)
+        if vol_20j > 0:
+            prix_tmp = float(mdata.get("prix", 1))
+            vol_fcfa = vol_20j * prix_tmp
+            liq_ok   = vol_fcfa >= VOL_MIN_FCFA
+            liq_col  = "#3fb950" if liq_ok else "#d29922"
+            liq_lbl  = f"{vol_fcfa/1e6:.1f} M FCFA/j" if vol_fcfa >= 1e6 else f"{vol_fcfa/1e3:.0f} K FCFA/j"
+            st.markdown(f"""<div class="banner {'banner-green' if liq_ok else 'banner-yellow'}">
+            {'✅' if liq_ok else '⚠️'} <b>Liquidité</b> : {liq_lbl} (vol. moy. 20j)
+            {'— Suffisante pour une position standard' if liq_ok else '— Faible : entrée/sortie délicate, position réduite conseillée'}
             </div>""", unsafe_allow_html=True)
 
         save_cb   = st.checkbox("💾 Sauvegarder fondamentaux", value=True)
@@ -915,7 +1041,7 @@ with tab1:
         r_an, meth, conf = extrapoler(resultat_saisi, periode, secteur)
         pnb_ = pnb if est_banque else None
 
-        # Ratios
+        # ── Ratios de base ──────────────────────────────────────
         bpa       = r_an / nombre_actions
         val_book  = capitaux_propres / nombre_actions
         per       = prix / bpa if bpa > 0 else 99
@@ -924,61 +1050,90 @@ with tab1:
         g_bpa     = ((bpa - bpa_prec) / abs(bpa_prec) * 100) if bpa_prec else 0
         roe       = r_an / capitaux_propres * 100
 
-        # Valeurs intrinsèques
-        graham    = np.sqrt(max(22.5 * bpa * val_book, 0)) if bpa > 0 else 0
-        fv_per    = bpa * PER_SECTORIELS[secteur] if bpa > 0 else 0
-        fv_dcf    = vi_dcf(bpa, g_bpa, TAUX_ACTUA) if bpa > 0 else 0
-        if graham > 0 and fv_dcf > 0:
-            vi = graham * 0.40 + fv_per * 0.35 + fv_dcf * 0.25
-        elif graham > 0:
-            vi = graham * 0.5 + fv_per * 0.5
+        # ── Accélération BPA (dérivée seconde) ─────────────────
+        # g_bpa     = croissance N-1 → N
+        # g_bpa_n1  = croissance N-2 → N-1
+        # accel_bpa = différence → positif = accélération, négatif = décélération
+        if bpa_n2 and bpa_n2 != 0 and bpa_prec:
+            g_bpa_n1  = ((bpa_prec - bpa_n2) / abs(bpa_n2) * 100)
+            accel_bpa = g_bpa - g_bpa_n1   # en points de %
         else:
-            vi = fv_per
+            g_bpa_n1  = None
+            accel_bpa = 0.0
+
+        # ── Yield on Cost projeté (dividende + croissance estimée) ──
+        # On estime la croissance future du dividende = moyenne g_bpa sur 2 ans
+        if g_bpa_n1 is not None:
+            g_div_est = (g_bpa + g_bpa_n1) / 2 / 100
+        else:
+            g_div_est = g_bpa / 100
+        g_div_est  = min(max(g_div_est, -0.05), 0.15)   # borné entre -5% et +15%
+        yoc_2ans   = (dividende * (1 + g_div_est) ** 2) / prix * 100 if prix > 0 else 0
+
+        # ── Valeurs intrinsèques — méthode recalibrée BRVM ─────
+        vi, fv_per, fv_dcf, graham = calc_vi(bpa, val_book, secteur, g_bpa, TAUX_ACTUA)
+
+        # ── Scores ──────────────────────────────────────────────
+        # Value : PER relatif 45% + P/Book relatif 55%
+        # Dividende retiré — stratégie de réévaluation de cours, pas de revenus
+        per_cap = min(PER_SECTORIELS[secteur], 25)
+        pbr_cib = PBR_SECTORIELS[secteur]
+        s_per   = np.clip(per_cap / per, 0, 1) if per > 0 else 0
+        s_pbr   = np.clip(pbr_cib / pbr, 0, 1) if pbr > 0 else 0
+        v_score = s_per * 0.45 + s_pbr * 0.55
+
+        if est_banque:
+            roa = dette_cp = None
+            marge_b  = r_an / pnb_ if pnb_ else 0
+            cd_ratio = encours_credits / depots if depots else 0
+            q_score  = (np.clip(marge_b / 0.20, 0, 1) * 0.45
+                      + np.clip(1 - abs(cd_ratio - 0.80) / 0.40, 0, 1) * 0.30
+                      + np.clip(roe / 15, 0, 1) * 0.25)
+        else:
+            roa      = r_an / total_actif * 100
+            dette_cp = dettes_totales / capitaux_propres
+            marge_b  = cd_ratio = None
+            bonus    = {"Stable": 0.20, "Volatil": 0.0, "Exceptionnel": 0.30}.get(stabilite_bpa, 0)
+            q_score  = (np.clip(roe / 25, 0, 1) * 0.35
+                      + np.clip(roa / 12, 0, 1) * 0.30
+                      + np.clip(1 - dette_cp / 3, 0, 1) * 0.25
+                      + bonus * 0.10)
+
+        # Momentum : 60% accélération/croissance BPA + 40% variation 3 mois
+        # g_bpa capte la croissance fondamentale, accel_bpa booste si accélération
+        g_bpa_eff = g_bpa + np.clip(accel_bpa * 0.5, -10, 10)  # accélération amplifie
+        m_score   = np.clip(g_bpa_eff / 30, -1, 1) * 0.60 + np.clip(var_3m / 20, -1, 1) * 0.40
+
+        score = W_V * v_score + W_Q * q_score + W_M * m_score
+
+        # ── Marge variable + prix cible ─────────────────────────
+        MARGE      = marge_variable(q_score)
         prix_cible = vi * (1 - MARGE)
         upside     = (prix_cible / prix - 1) * 100
         survalu    = prix > vi
         hors_marge = prix > prix_cible and not survalu
 
-        # Scores
-        per_cap = min(PER_SECTORIELS[secteur], 25)
-        s_per   = np.clip(per_cap / per, 0, 1) if per > 0 else 0
-        s_pbr   = np.clip(1.5 / pbr, 0, 1)
-        s_dy    = np.clip(dy / 0.08, 0, 1)
-        v_score = s_per * 0.40 + s_pbr * 0.35 + s_dy * 0.25
-
-        if est_banque:
-            roa = dette_cp = None
-            marge_b = r_an / pnb_ if pnb_ else 0
-            cd_ratio = encours_credits / depots if depots else 0
-            q_score = (np.clip(marge_b / 0.20, 0, 1) * 0.45
-                     + np.clip(1 - abs(cd_ratio - 0.80) / 0.40, 0, 1) * 0.30
-                     + np.clip(roe / 15, 0, 1) * 0.25)
-        else:
-            roa = r_an / total_actif * 100
-            dette_cp = dettes_totales / capitaux_propres
-            marge_b = cd_ratio = None
-            bonus = {"Stable": 0.20, "Volatil": 0.0, "Exceptionnel": 0.30}.get(stabilite_bpa, 0)
-            q_score = (np.clip(roe / 25, 0, 1) * 0.35
-                     + np.clip(roa / 12, 0, 1) * 0.30
-                     + np.clip(1 - dette_cp / 3, 0, 1) * 0.25
-                     + bonus * 0.10)
-
-        m_score = np.clip(g_bpa / 30, -1, 1) * 0.60 + np.clip(var_1s / 10, -1, 1) * 0.40
-        score   = W_V * v_score + W_Q * q_score + W_M * m_score
-
-        f_rsi    = rsi > RSI_HAUT
-        f_bb     = prix > bb_sup
-        bb_pct   = ((prix - bb_inf) / (bb_sup - bb_inf) * 100) if (bb_sup - bb_inf) > 0 else 50
+        # ── Filtres techniques ──────────────────────────────────
+        f_rsi = rsi > RSI_HAUT
+        f_bb  = prix > bb_sup
+        bb_pct = ((prix - bb_inf) / (bb_sup - bb_inf) * 100) if (bb_sup - bb_inf) > 0 else 50
         ecart_ema = (prix / ema20 - 1) * 100
-        sig      = calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb)
-        col_sig  = SIGNAL_COLORS.get(sig, "#8b949e")
+
+        # ── Filtre liquidité ────────────────────────────────────
+        vol_20j    = mdata.get("vol_moy_20j", 0)
+        vol_fcfa   = vol_20j * prix if vol_20j > 0 else 0
+        f_liquidite = vol_fcfa > 0 and vol_fcfa < VOL_MIN_FCFA
+
+        sig     = calc_signal(score, upside, survalu, hors_marge, f_rsi, f_bb, q_score, f_liquidite)
+        col_sig = SIGNAL_COLORS.get(sig, "#8b949e")
 
         # ── Sauvegarde ─────────────────────────────────────────
         if save_cb:
             fd_data = {"secteur": secteur, "periode": periode, "annee": annee,
                        "est_banque": 1 if est_banque else 0,
                        "nombre_actions": nombre_actions, "dividende": dividende,
-                       "bpa_prec": bpa_prec, "capitaux_propres": capitaux_propres}
+                       "bpa_prec": bpa_prec, "bpa_n2": bpa_n2,
+                       "capitaux_propres": capitaux_propres}
             if est_banque:
                 fd_data.update({"pnb": pnb_, "resultat_b": resultat_saisi,
                                 "encours_credits": encours_credits, "depots_clientele": depots})
@@ -1041,14 +1196,63 @@ with tab1:
               <div class="ind-sub" style="color:{ema_color}">{ema_label}</div>
             </div>""", unsafe_allow_html=True)
 
-        # ── Section : Verrou Graham ───────────────────────────
+        # ── Section : Momentum fondamental ───────────────────
+        st.markdown("#### 📈 Momentum fondamental")
+        mf1, mf2, mf3 = st.columns(3)
+
+        with mf1:
+            if g_bpa_n1 is not None:
+                accel_col   = "#3fb950" if accel_bpa > 0 else ("#d29922" if accel_bpa > -5 else "#f85149")
+                accel_icon  = "↗" if accel_bpa > 0 else ("→" if accel_bpa > -5 else "↘")
+                accel_label = "Accélération" if accel_bpa > 0 else ("Stable" if accel_bpa > -5 else "Décélération")
+                st.markdown(f"""
+                <div class="ind-box" style="border-color:{accel_col}33">
+                  <div class="ind-label">Accélération BPA</div>
+                  <div class="ind-value" style="color:{accel_col}">{accel_icon} {accel_bpa:+.1f}<span style="font-size:.4em">pp</span></div>
+                  <div class="ind-sub" style="color:#8b949e">N-2→N-1 : <b>{g_bpa_n1:+.1f}%</b> · N-1→N : <b>{g_bpa:+.1f}%</b></div>
+                  <div class="ind-sub" style="color:{accel_col}">{accel_label}</div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="ind-box">
+                  <div class="ind-label">Accélération BPA</div>
+                  <div class="ind-value" style="color:#8b949e">—</div>
+                  <div class="ind-sub" style="color:#8b949e">Saisir BPA N-2 pour activer</div>
+                </div>""", unsafe_allow_html=True)
+
+        with mf2:
+            v3m_col  = "#3fb950" if var_3m > 10 else ("#d29922" if var_3m > -5 else "#f85149")
+            v3m_icon = "↗" if var_3m > 10 else ("→" if var_3m > -5 else "↘")
+            st.markdown(f"""
+            <div class="ind-box" style="border-color:{v3m_col}33">
+              <div class="ind-label">Variation 3 mois</div>
+              <div class="ind-value" style="color:{v3m_col}">{v3m_icon} {var_3m:+.1f}<span style="font-size:.4em">%</span></div>
+              <div class="ind-sub" style="color:#8b949e">Signal de tendance cours</div>
+            </div>""", unsafe_allow_html=True)
+
+        with mf3:
+            yoc_col = "#3fb950" if yoc_2ans > 5 else ("#d29922" if yoc_2ans > 2 else "#8b949e")
+            st.markdown(f"""
+            <div class="ind-box" style="border-color:{yoc_col}33">
+              <div class="ind-label">Yield on Cost · 2 ans</div>
+              <div class="ind-value" style="color:{yoc_col}">{yoc_2ans:.1f}<span style="font-size:.4em">%</span></div>
+              <div class="ind-sub" style="color:#8b949e">Div. actuel {dy*100:.1f}% · g div. {g_div_est*100:+.1f}%/an</div>
+            </div>""", unsafe_allow_html=True)
+
+        # ── Section : Valorisation ────────────────────────────
+        marge_pct = MARGE * 100
+        marge_qual = "haute qualité" if MARGE == 0.10 else ("standard" if MARGE == 0.15 else "prudente")
         st.markdown("#### 🔒 Valorisation")
+        if f_liquidite:
+            st.markdown(f'<div class="banner banner-yellow">⚠️ Liquidité faible ({vol_fcfa/1e3:.0f} K FCFA/j) — signal dégradé automatiquement</div>', unsafe_allow_html=True)
+        if q_score < QUALITY_FLOOR:
+            st.markdown(f'<div class="banner banner-yellow">⚠️ Quality score {q_score:.2f} &lt; {QUALITY_FLOOR} — signal plafonné à SURVEILLER</div>', unsafe_allow_html=True)
         if survalu:
-            st.markdown(f'<div class="banner banner-red">🔒 Surévalué — Prix {prix:,.0f} FCFA &gt; Valeur intrinsèque {vi:,.0f} FCFA</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="banner banner-red">🔒 Surévalué — Prix {prix:,.0f} &gt; VI {vi:,.0f} FCFA</div>', unsafe_allow_html=True)
         elif hors_marge:
-            st.markdown(f'<div class="banner banner-yellow">⚠️ Hors marge de sécurité — Prix {prix:,.0f} entre VI {vi:,.0f} et cible {prix_cible:,.0f} FCFA</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="banner banner-yellow">⚠️ Hors marge ({marge_pct:.0f}% · {marge_qual}) — Prix {prix:,.0f} entre VI {vi:,.0f} et cible {prix_cible:,.0f} FCFA</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="banner banner-green">✅ Dans la marge — Prix {prix:,.0f} &lt; Cible {prix_cible:,.0f} FCFA · Potentiel +{upside:.1f}%</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="banner banner-green">✅ Dans la marge ({marge_pct:.0f}% · {marge_qual}) — Prix {prix:,.0f} &lt; Cible {prix_cible:,.0f} · Potentiel +{upside:.1f}%</div>', unsafe_allow_html=True)
 
         # ── Section : Ratios ──────────────────────────────────
         st.markdown("#### 📊 Ratios fondamentaux")
@@ -1072,9 +1276,12 @@ with tab1:
             else:
                 st.markdown(ratio_box("ROE", f"{roe:.1f}%") + ratio_box("ROA", f"{roa:.1f}%"), unsafe_allow_html=True)
         with r4:
-            st.markdown(ratio_box("N° Graham", f"{graham:,.0f}") + ratio_box("Δ BPA", f"{g_bpa:+.1f}%"), unsafe_allow_html=True)
+            st.markdown(ratio_box("N° Graham BRVM", f"{graham:,.0f}", f"PER×PBR sect.") +
+                        ratio_box("Δ BPA", f"{g_bpa:+.1f}%"), unsafe_allow_html=True)
         with r5:
-            st.markdown(ratio_box("Val. intrinsèque", f"{vi:,.0f}") + ratio_box("Prix cible", f"{prix_cible:,.0f}", f"marge {MARGE*100:.0f}%"), unsafe_allow_html=True)
+            vi_detail = f"PER {fv_per:,.0f}·DCF {fv_dcf:,.0f}·G {graham:,.0f}"
+            st.markdown(ratio_box("Val. intrinsèque", f"{vi:,.0f}", vi_detail) +
+                        ratio_box("Prix cible", f"{prix_cible:,.0f}", f"marge {MARGE*100:.0f}%"), unsafe_allow_html=True)
 
         # ── Signal final ──────────────────────────────────────
         score_bar_w = int(score * 100)
@@ -1110,6 +1317,10 @@ with tab1:
             "Marge/PNB": f"{marge_b*100:.1f}%" if est_banque else "—",
             "Crd/Dep": f"{cd_ratio*100:.1f}%" if est_banque else "—",
             "RSI": round(rsi, 1), "BB%": round(bb_pct, 1), "vs EMA%": round(ecart_ema, 1),
+            "Var3M%": round(var_3m, 1), "Accel BPA": round(accel_bpa, 1) if g_bpa_n1 is not None else "—",
+            "YoC2ans%": round(yoc_2ans, 1),
+            "Liquidité": f"{vol_fcfa/1e6:.1f}M" if vol_fcfa >= 1e6 else (f"{vol_fcfa/1e3:.0f}K" if vol_fcfa > 0 else "—"),
+            "Marge%": round(MARGE * 100, 0),
             "VI": round(vi, 0), "Cible": round(prix_cible, 0), "Upside%": round(upside, 1),
             "Value": round(v_score, 3), "Quality": round(q_score, 3),
             "Momentum": round(m_score, 3), "Score": round(score, 3), "Signal": sig,
@@ -1219,6 +1430,15 @@ with tab2:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # ── Alerte concentration sectorielle ─────────────────────
+        secteur_counts = df.groupby("Secteur").size()
+        total_titres   = len(df)
+        surpoids = {s: n/total_titres for s, n in secteur_counts.items() if n/total_titres > 0.40}
+        if surpoids and total_titres >= 3:
+            alertes = " · ".join(f"<b>{s}</b> {p*100:.0f}%" for s, p in surpoids.items())
+            st.markdown(f'<div class="banner banner-yellow">⚠️ Concentration sectorielle élevée : {alertes} — diversification recommandée</div>',
+                        unsafe_allow_html=True)
+
         # ── Vue Kanban ───────────────────────────────────────────
         buckets = {"achat": [], "surveiller": [], "eviter": []}
         for _, row in df.iterrows():
@@ -1274,7 +1494,9 @@ with tab2:
                 except: return ""
 
             cols_show = ["Titre", "Secteur", "Prix", "PER", "P/B", "ROE%",
-                         "RSI", "BB%", "vs EMA%", "VI", "Cible", "Upside%", "Score", "Signal"]
+                         "RSI", "BB%", "vs EMA%", "Var3M%", "Accel BPA",
+                         "YoC2ans%", "Liquidité", "Marge%",
+                         "VI", "Cible", "Upside%", "Quality", "Score", "Signal"]
             st.dataframe(
                 df[cols_show].style
                     .applymap(_cs, subset=["Score"])
@@ -1336,46 +1558,72 @@ with tab3:
 # ══════════════════════════════════════════════════════════════════
 with tab4:
     st.markdown("""
-### Architecture fetch v5.0
+### Architecture fetch v6.0
 
 ```
 Cours (cascade, 1er succès) :
-  1. richbourse.com/common/variation/index   — données J
-  2. brvm.org/fr/cours-actions/0             — officiel BRVM
-  3. sikafinance.com/marches/aaz             — agrégateur
+  1. richbourse.com/common/variation/index
+  2. brvm.org/fr/cours-actions/0
+  3. sikafinance.com/marches/aaz
 
 Indicateurs techniques (richbourse historique) :
-  richbourse.com/common/variation/historique/TICKER
-  → Parsing HTML table → DataFrame [date, close]
-  → BB(20,2)  : mid ± 2σ sur 20 séances
-  → EMA(20)   : moyenne exponentielle span=20
-  → RSI(14)   : gains/pertes moyens sur 14 séances
-  Minimum : 20 bougies — saisie manuelle si indispo
+  → BB(20,2) · EMA(20) · RSI(14) · Var 3 mois · Vol. moy. 20j
+  Minimum 20 bougies — saisie manuelle si indispo
 ```
 
-### Logique de scoring
+### Valeur intrinsèque recalibrée BRVM
 
 ```
-[FILTRE 1] RSI > seuil      → 🔴 BLOQUÉ RSI
-[FILTRE 2] Prix > BB sup    → 🔴 BLOQUÉ BB
-[FILTRE 3] Prix > VI        → 🔴 SURÉVALUÉ
-[FILTRE 4] Prix > Cible     → 🟡 HORS MARGE
+VI = FV_PER × 50% + DCF × 35% + Graham_sect × 15%
 
-Score = Value×w + Quality×w + Momentum×w
-  Value    : PER, P/Book, rendement dividende
-  Quality  : ROE, ROA, dette/CP | marge PNB, Crd/Dep (banques)
-  Momentum : Δ BPA YoY + variation cours 1 semaine
+  FV_PER (50%) : BPA × PER sectoriel BRVM
+    Ancre principale — capte le niveau de valorisation
+    "normal" du secteur sur ce marché
+
+  DCF (35%) : actualisation flux 5 ans + valeur terminale
+    g1 borné [-10%, +20%] · g_perp = 3% (croissance UEMOA)
+    Taux d'actualisation sectoriels : 11–14%
+
+  Graham BRVM (15%) : √(PER_sect × PBR_sect × BPA × Book)
+    Garde-fou cohérence bilan — calibré avec plafonds
+    sectoriels BRVM, remplace le 22.5 universel (NYSE 1970)
+    Réduit de 40% → 15% : rôle de vérification, pas d'ancre
+
+  PBR sectoriels BRVM :
+    Télécoms 3.5x · Services Financiers 1.2x
+    Conso. base 2.5x · Industriels 1.8x
+    Énergie 2.0x · Services Publics 1.5x
 ```
 
-### Valeur intrinsèque (3 méthodes combinées)
+### Score de rotation
 
 ```
-VI  = Graham(40%) + Fair Value PER(35%) + DCF(25%)
-    — Graham   : √(22.5 × BPA × Book Value)
-    — PER cible: BPA × PER sectoriel BRVM
-    — DCF      : actualisation sur 5 ans + valeur terminale
+Score = Value×25% + Quality×40% + Momentum×35%
 
-Prix cible = VI × (1 − marge de sécurité)
+  Value (25%) : PER relatif (45%) + P/Book relatif (55%)
+    Dividende retiré — stratégie réévaluation cours, pas revenus
+
+  Quality (40%) : ROE · ROA · dette/CP · stabilité BPA
+    Banques : marge/PNB · crédits/dépôts · ROE
+
+  Momentum (35%) : accélération BPA (60%) + variation 3M (40%)
+    Accélération = dérivée seconde du BPA — détecte les titres
+    en phase d'expansion avant que le marché ne les price
+
+  Quality floor : signal plafonné à SURVEILLER si Quality < 0.40
+  Marge dynamique : 10% (Q≥0.70) · 15% (Q 0.50–0.70) · 20% (<0.50)
+  Liquidité : signal dégradé si vol. moy. 20j × prix < 1M FCFA/j
+```
+
+### Filtres de blocage (priorité absolue)
+
+```
+[1] RSI > seuil surachat   → 🔴 BLOQUÉ RSI
+[2] Prix > BB supérieure   → 🔴 BLOQUÉ BB
+[3] Liquidité insuffisante → 🟡 LIQUIDITÉ FAIBLE
+[4] Prix > VI              → 🔴 SURÉVALUÉ
+[5] Prix > Prix cible      → 🟡 HORS MARGE
+[6] Quality < 0.40         → plafonnement signal
 ```
 
 ### Installation
