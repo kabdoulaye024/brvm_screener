@@ -439,39 +439,123 @@ def fetch_cours(ticker: str) -> dict:
 # ══════════════════════════════════════════════════════════════════
 # SCRAPING — HISTORIQUE RICHBOURSE → INDICATEURS TECHNIQUES
 # ══════════════════════════════════════════════════════════════════
+def _parse_historique_html(html: str) -> pd.DataFrame:
+    """
+    Parse la table historique richbourse.
+    Colonnes confirmées (2026-03) :
+      Date | Variation(%) | Valeur(FCFA) | Cours ajusté | Volume ajusté | Cours normal | Volume normal
+    On utilise 'Cours ajusté' (index 3) comme close.
+    """
+    if not HAS_BS4:
+        return pd.DataFrame()
+    soup  = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
+    if table is None:
+        return pd.DataFrame()
+
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        return pd.DataFrame()
+
+    # Détecter l'index de la colonne "cours ajusté" depuis le header
+    header_cells = [th.get_text(strip=True).lower().replace("\xa0","").replace(" ","")
+                    for th in rows[0].find_all(["th","td"])]
+    # Priorité : "coursajusté" → "coursnormal" → index 3 (fallback)
+    idx_close = next(
+        (i for i, h in enumerate(header_cells) if "ajust" in h and "cours" in h),
+        next((i for i, h in enumerate(header_cells) if "normal" in h and "cours" in h), 3)
+    )
+
+    data = []
+    for tr in rows[1:]:
+        cells = tr.find_all("td")
+        if len(cells) <= idx_close:
+            continue
+        date_txt  = cells[0].get_text(strip=True)
+        close_txt = cells[idx_close].get_text(strip=True)
+        data.append([date_txt, close_txt])
+
+    if not data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data, columns=["date", "close"])
+    df["date"]  = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+    df["close"] = pd.to_numeric(
+        df["close"].str.replace(r"[\xa0\s,]", "", regex=True)
+                   .str.replace(r"\.", "", regex=True)   # séparateur milliers
+                   .str.replace(",", ".", regex=False),
+        errors="coerce")
+    # Si toutes les valeurs sont NaN, les nombres étaient peut-être sans séparateur
+    if df["close"].isna().all():
+        df["close"] = pd.to_numeric(
+            df["close_raw"] if "close_raw" in df else
+            pd.Series([c[1] for c in data])
+              .str.replace(r"[\xa0\s]", "", regex=True)
+              .str.replace(",", ".", regex=False),
+            errors="coerce")
+    return df.dropna()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
     """
     Récupère l'historique journalier depuis richbourse.com.
-    Retourne un DataFrame [date, close] trié ASC.
+    La page par défaut ne retourne que ~20 lignes.
+    On effectue plusieurs appels avec des plages de dates glissantes
+    pour obtenir au moins nb points (minimum 35 pour RSI+BB fiables).
+    Retourne un DataFrame [date, close] trié ASC, dédupliqué.
     """
-    tk  = ticker.upper()
-    url = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+    tk   = ticker.upper()
     hdrs = {**HEADERS, "Referer": f"{RICHBOURSE_BASE}/", "Accept": "text/html,application/xhtml+xml"}
+    frames = []
+
+    # ── Appel 1 : page par défaut (dernières séances) ──────────
+    url_base = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
     try:
-        r = requests.get(url, headers=hdrs, timeout=20, verify=False)
-        if r.status_code != 200 or not HAS_BS4:
-            return pd.DataFrame()
-        soup  = BeautifulSoup(r.text, "html.parser")
-        table = soup.find("table")
-        if table is None:
-            return pd.DataFrame()
-        rows = table.find_all("tr")
-        data = []
-        for tr in rows[1:]:
-            cols = tr.find_all("td")
-            if len(cols) >= 2:
-                data.append([cols[0].get_text(strip=True), cols[1].get_text(strip=True)])
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data, columns=["date", "close"])
-        df["date"]  = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
-        df["close"] = pd.to_numeric(
-            df["close"].str.replace(r"[\xa0\s]", "", regex=True).str.replace(",", ".", regex=False),
-            errors="coerce")
-        return df.dropna().sort_values("date").tail(nb).reset_index(drop=True)
+        r = requests.get(url_base, headers=hdrs, timeout=20, verify=False)
+        if r.status_code == 200:
+            df0 = _parse_historique_html(r.text)
+            if not df0.empty:
+                frames.append(df0)
     except Exception:
+        pass
+
+    # ── Appels 2-4 : plages de dates couvrant ~18 mois ─────────
+    # Richbourse accepte date_debut / date_fin en GET sur l'URL de base
+    from datetime import timedelta
+    today = datetime.now()
+    ranges = [
+        (today - timedelta(days=540), today - timedelta(days=360)),
+        (today - timedelta(days=360), today - timedelta(days=180)),
+        (today - timedelta(days=180), today),
+    ]
+    for d_start, d_end in ranges:
+        params = {
+            "action":     tk,
+            "periode":    "Journali\u00e8re",
+            "date_debut": d_start.strftime("%Y-%m-%d"),
+            "date_fin":   d_end.strftime("%Y-%m-%d"),
+        }
+        try:
+            r = requests.get(url_base, params=params, headers=hdrs, timeout=20, verify=False)
+            if r.status_code == 200 and "<table" in r.text.lower():
+                df_i = _parse_historique_html(r.text)
+                if not df_i.empty:
+                    frames.append(df_i)
+        except Exception:
+            continue
+
+    if not frames:
         return pd.DataFrame()
+
+    # Concat + dédup + tri
+    df_all = (pd.concat(frames, ignore_index=True)
+                .drop_duplicates(subset=["date"])
+                .dropna()
+                .sort_values("date")
+                .tail(nb)
+                .reset_index(drop=True))
+    return df_all
 
 
 def calc_indicateurs(df: pd.DataFrame) -> dict:
