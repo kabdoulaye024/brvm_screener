@@ -843,7 +843,7 @@ with st.sidebar:
         except Exception as e:
             st.error(str(e))
 
-st.markdown("---")
+    st.markdown("---")
     st.markdown("**🐛 Debug**")
     st.session_state["_debug_hist"] = st.checkbox("Activer logs historique", value=False)
     
