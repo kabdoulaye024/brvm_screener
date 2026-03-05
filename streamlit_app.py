@@ -586,48 +586,57 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
     """
     if df.empty or len(df) < 20:
         return {}
-    close = df["close"]
+    
+    try:
+        close = df["close"]
 
-    # EMA 20
-    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        # EMA 20
+        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
 
-    # RSI 14
-    delta    = close.diff()
-    gain     = delta.clip(lower=0)
-    loss     = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs       = avg_gain / avg_loss
-    rsi_val  = (100 - (100 / (1 + rs))).iloc[-1]
+        # RSI 14
+        delta    = close.diff()
+        gain     = delta.clip(lower=0)
+        loss     = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs       = avg_gain / avg_loss
+        rsi_val  = (100 - (100 / (1 + rs))).iloc[-1]
 
-    # Bollinger Bands (20, 2)
-    bb_mid = close.rolling(20).mean().iloc[-1]
-    bb_std = close.rolling(20).std().iloc[-1]
-    bb_sup = bb_mid + 2 * bb_std
-    bb_inf = bb_mid - 2 * bb_std
+        # Bollinger Bands (20, 2)
+        bb_mid = close.rolling(20).mean().iloc[-1]
+        bb_std = close.rolling(20).std().iloc[-1]
+        bb_sup = bb_mid + 2 * bb_std
+        bb_inf = bb_mid - 2 * bb_std
 
-    # Variation 3 mois (~63 séances de trading)
-    nb = len(close)
-    lookback_3m = min(63, nb - 1)
-    var_3m = (close.iloc[-1] / close.iloc[-lookback_3m - 1] - 1) * 100 if lookback_3m > 0 else 0.0
+        # Variation 3 mois (~63 séances de trading)
+        nb = len(close)
+        lookback_3m = min(63, nb - 1)
+        var_3m = (close.iloc[-1] / close.iloc[-lookback_3m - 1] - 1) * 100 if lookback_3m > 0 else 0.0
 
-    # Volume moyen 20j
-    vol_moy_20j = 0.0
-    if "volume" in df.columns:
-        vols = pd.to_numeric(df["volume"], errors="coerce").dropna()
-        if len(vols) >= 5:
-            vol_moy_20j = float(vols.tail(20).mean())
+        # Volume moyen 20j
+        vol_moy_20j = 0.0
+        if "volume" in df.columns:
+            vols = pd.to_numeric(df["volume"], errors="coerce").dropna()
+            if len(vols) >= 5:
+                vol_moy_20j = float(vols.tail(20).mean())
 
-    return {
-        "rsi":        round(rsi_val, 1),
-        "ema20":      round(ema20, 0),
-        "bb_sup":     round(bb_sup, 0),
-        "bb_inf":     round(bb_inf, 0),
-        "bb_mid":     round(bb_mid, 0),
-        "var_3m":     round(var_3m, 2),
-        "vol_moy_20j": round(vol_moy_20j, 0),
-        "nb_pts":     nb,
-    }
+        # Vérifier que toutes les valeurs sont valides (pas NaN ou inf)
+        if not all(np.isfinite(v) for v in [rsi_val, ema20, bb_sup, bb_inf, bb_mid, var_3m, vol_moy_20j]):
+            return {}
+
+        return {
+            "rsi":        round(float(rsi_val), 1),
+            "ema20":      round(float(ema20), 0),
+            "bb_sup":     round(float(bb_sup), 0),
+            "bb_inf":     round(float(bb_inf), 0),
+            "bb_mid":     round(float(bb_mid), 0),
+            "var_3m":     round(float(var_3m), 2),
+            "vol_moy_20j": round(float(vol_moy_20j), 0),
+            "nb_pts":     nb,
+        }
+    except Exception as e:
+        # En cas d'erreur, retourner un dict vide
+        return {}
 
 
 def get_marche(ticker: str) -> dict:
@@ -638,12 +647,22 @@ def get_marche(ticker: str) -> dict:
     """
     tk = ticker.upper().strip()
     result = {}
-    result.update(fetch_cours(tk))
-    df_hist = fetch_historique(tk)
-    if not df_hist.empty:
-        indics = calc_indicateurs(df_hist)
-        result.update(indics)
-        result["_source_tech"] = f"richbourse · {indics.get('nb_pts', 0)} pts"
+    
+    try:
+        result.update(fetch_cours(tk))
+    except Exception:
+        pass
+    
+    try:
+        df_hist = fetch_historique(tk)
+        if not df_hist.empty:
+            indics = calc_indicateurs(df_hist)
+            if indics:  # Seulement si calc_indicateurs a réussi
+                result.update(indics)
+                result["_source_tech"] = f"richbourse · {indics.get('nb_pts', 0)} pts"
+    except Exception:
+        pass
+    
     return result
 
 # ══════════════════════════════════════════════════════════════════
@@ -877,11 +896,11 @@ with tab1:
 
         # ── Barre de statut indicateurs ─────────────────────────
         has_prix = px_ok
-        has_rsi  = "rsi"    in mdata
-        has_bb   = "bb_sup" in mdata and "bb_inf" in mdata
-        has_ema  = "ema20"  in mdata
-        nb_pts   = mdata.get("nb_pts", 0)
-        src_tech = mdata.get("_source_tech", "—")
+        has_rsi  = "rsi"    in mdata and mdata.get("rsi") is not None
+        has_bb   = "bb_sup" in mdata and "bb_inf" in mdata and mdata.get("bb_sup") is not None and mdata.get("bb_inf") is not None
+        has_ema  = "ema20"  in mdata and mdata.get("ema20") is not None
+        nb_pts   = mdata.get("nb_pts", 0) if mdata.get("nb_pts") is not None else 0
+        src_tech = mdata.get("_source_tech", "—") if mdata.get("_source_tech") else "—"
 
         def _dot(ok):
             cls = "dot-green" if ok else "dot-red"
@@ -889,16 +908,22 @@ with tab1:
 
         all_ok = has_prix and has_rsi and has_bb and has_ema
         bar_border = "#3fb950" if all_ok else ("#d29922" if has_prix else "#f85149")
+        
+        # Construire les valeurs de manière sécurisée
+        cours_val = f" {int(mdata['prix'])} FCFA" if has_prix else ""
+        rsi_val = f" {mdata['rsi']:.0f}" if has_rsi else ""
+        bb_val = f" {int(mdata.get('bb_inf',0))} / {int(mdata.get('bb_sup',0))}" if has_bb else ""
+        ema_val = f" {int(mdata['ema20'])}" if has_ema else ""
 
         st.markdown(f"""
         <div class="status-bar" style="border-left:3px solid {bar_border}">
-          <div class="status-item">{_dot(has_prix)} Cours{' '+str(int(mdata['prix']))+' FCFA' if has_prix else ''}</div>
+          <div class="status-item">{_dot(has_prix)} Cours{cours_val}</div>
           <div style="color:#1e2633">|</div>
-          <div class="status-item">{_dot(has_rsi)} RSI{' '+str(mdata['rsi']) if has_rsi else ''}</div>
+          <div class="status-item">{_dot(has_rsi)} RSI{rsi_val}</div>
           <div style="color:#1e2633">|</div>
-          <div class="status-item">{_dot(has_bb)} BB &nbsp;{str(int(mdata.get('bb_inf',0)))+' / '+str(int(mdata.get('bb_sup',0))) if has_bb else ''}</div>
+          <div class="status-item">{_dot(has_bb)} BB{bb_val}</div>
           <div style="color:#1e2633">|</div>
-          <div class="status-item">{_dot(has_ema)} EMA20 &nbsp;{str(int(mdata['ema20'])) if has_ema else ''}</div>
+          <div class="status-item">{_dot(has_ema)} EMA20{ema_val}</div>
           <div style="color:#1e2633">|</div>
           <div class="status-item" style="color:#8b949e">{nb_pts} pts · {src_tech}</div>
         </div>""", unsafe_allow_html=True)
@@ -987,7 +1012,7 @@ with tab1:
         st.markdown('<hr class="sep">', unsafe_allow_html=True)
         st.markdown("**📡 Indicateurs techniques**")
 
-        has_tech = all(k in mdata for k in ["rsi", "bb_sup", "bb_inf", "ema20"])
+        has_tech = all(k in mdata and mdata.get(k) is not None for k in ["rsi", "bb_sup", "bb_inf", "ema20"])
         if has_tech:
             st.markdown(f"""<div class="banner banner-green">
             ✅ BB(20,2) · EMA(20) · RSI(14) calculés depuis l'historique Richbourse
