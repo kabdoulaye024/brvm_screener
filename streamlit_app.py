@@ -461,52 +461,60 @@ def fetch_cours(ticker: str) -> dict:
 # ══════════════════════════════════════════════════════════════════
 def _parse_historique_html(html: str) -> pd.DataFrame:
     """
-    Parse la table historique richbourse.
-    Colonnes confirmées (2026-03) :
-      Date | Variation(%) | Valeur(FCFA) | Cours ajusté | Volume ajusté | Cours normal | Volume normal
-    On utilise 'Cours ajusté' (index 3) et 'Volume ajusté' (index 4).
+    Parse la table historique richbourse — version défensive avec logs.
     """
     if not HAS_BS4:
         return pd.DataFrame()
     soup  = BeautifulSoup(html, "html.parser")
     table = soup.find("table")
     if table is None:
+        st.warning("⚠️ DEBUG: Aucune balise <table> trouvée dans la réponse richbourse")
         return pd.DataFrame()
 
     rows = table.find_all("tr")
     if len(rows) < 2:
         return pd.DataFrame()
 
-    # Détecter les indices depuis le header
     header_cells = [th.get_text(strip=True).lower().replace("\xa0","").replace(" ","")
                     for th in rows[0].find_all(["th","td"])]
 
+    # ── LOG DEBUG : afficher les en-têtes détectés ──────────────
+    if st.session_state.get("_debug_hist"):
+        st.code(f"Headers détectés : {header_cells}", language=None)
+
+    # Détection robuste des colonnes
     idx_close = next(
         (i for i, h in enumerate(header_cells) if "ajust" in h and "cours" in h),
-        next((i for i, h in enumerate(header_cells) if "normal" in h and "cours" in h), 3)
+        next((i for i, h in enumerate(header_cells) if "normal" in h and "cours" in h),
+        next((i for i, h in enumerate(header_cells) if "cours" in h or "close" in h or "prix" in h), 3))
     )
     idx_vol = next(
         (i for i, h in enumerate(header_cells) if "ajust" in h and "vol" in h),
         next((i for i, h in enumerate(header_cells) if "vol" in h), 4)
     )
+    idx_date = next(
+        (i for i, h in enumerate(header_cells) if "date" in h or "jour" in h), 0
+    )
 
     data = []
     for tr in rows[1:]:
         cells = tr.find_all("td")
-        if len(cells) <= idx_close:
+        if len(cells) <= max(idx_close, idx_date):
             continue
-        date_txt  = cells[0].get_text(strip=True)
+        date_txt  = cells[idx_date].get_text(strip=True)
         close_txt = cells[idx_close].get_text(strip=True)
         vol_txt   = cells[idx_vol].get_text(strip=True) if len(cells) > idx_vol else "0"
         data.append([date_txt, close_txt, vol_txt])
 
     if not data:
+        if st.session_state.get("_debug_hist"):
+            st.warning(f"DEBUG: Table trouvée ({len(rows)} lignes) mais aucune donnée extraite")
         return pd.DataFrame()
 
     def _clean_num(series):
         return pd.to_numeric(
-            series.str.replace(r"[\xa0\s]", "", regex=True)
-                  .str.replace(r"\s", "", regex=True),
+            series.str.replace(r"[\xa0\s\u202f\u2009]", "", regex=True)
+                  .str.replace(",", ".", regex=False),
             errors="coerce")
 
     df = pd.DataFrame(data, columns=["date", "close", "volume"])
@@ -514,35 +522,37 @@ def _parse_historique_html(html: str) -> pd.DataFrame:
     df["close"]  = _clean_num(df["close"])
     df["volume"] = _clean_num(df["volume"])
 
-    return df.dropna(subset=["date", "close"])
+    result = df.dropna(subset=["date", "close"])
+    if st.session_state.get("_debug_hist"):
+        st.success(f"DEBUG: {len(result)} lignes valides extraites (close max={result['close'].max():.0f})")
+    return result
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
     """
-    Récupère l'historique journalier depuis richbourse.com.
-    La page par défaut ne retourne que ~20 lignes.
-    On effectue plusieurs appels avec des plages de dates glissantes
-    pour obtenir au moins nb points (minimum 35 pour RSI+BB fiables).
-    Retourne un DataFrame [date, close] trié ASC, dédupliqué.
+    Récupère l'historique — version robuste avec fallback POST et logs.
     """
     tk   = ticker.upper()
     hdrs = {**HEADERS, "Referer": f"{RICHBOURSE_BASE}/", "Accept": "text/html,application/xhtml+xml"}
     frames = []
+    errors = []
 
-    # ── Appel 1 : page par défaut (dernières séances) ──────────
     url_base = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+
+    # ── Appel 1 : page par défaut ──────────────────────────────
     try:
         r = requests.get(url_base, headers=hdrs, timeout=20, verify=False)
-        if r.status_code == 200:
+        if r.status_code == 200 and "<table" in r.text.lower():
             df0 = _parse_historique_html(r.text)
             if not df0.empty:
                 frames.append(df0)
-    except Exception:
-        pass
+        else:
+            errors.append(f"Appel 1 : HTTP {r.status_code} / table={'<table' in r.text.lower()}")
+    except Exception as e:
+        errors.append(f"Appel 1 exception : {e}")
 
-    # ── Appels 2-4 : plages de dates couvrant ~18 mois ─────────
-    # Richbourse accepte date_debut / date_fin en GET sur l'URL de base
+    # ── Appels 2-4 : plages glissantes (GET + POST) ────────────
     from datetime import timedelta
     today = datetime.now()
     ranges = [
@@ -551,28 +561,44 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
         (today - timedelta(days=180), today),
     ]
     for d_start, d_end in ranges:
-        params = {
-            "action":     tk,
-            "periode":    "Journali\u00e8re",
-            "date_debut": d_start.strftime("%Y-%m-%d"),
-            "date_fin":   d_end.strftime("%Y-%m-%d"),
-        }
-        try:
-            r = requests.get(url_base, params=params, headers=hdrs, timeout=20, verify=False)
-            if r.status_code == 200 and "<table" in r.text.lower():
-                df_i = _parse_historique_html(r.text)
-                if not df_i.empty:
-                    frames.append(df_i)
-        except Exception:
-            continue
+        for method in ["GET", "POST"]:
+            payload = {
+                "action":     tk,
+                "periode":    "Journalière",
+                "date_debut": d_start.strftime("%d/%m/%Y"),   # format FR alternatif
+                "date_fin":   d_end.strftime("%d/%m/%Y"),
+            }
+            try:
+                if method == "GET":
+                    # Essai avec format ISO
+                    p2 = {k: v for k, v in payload.items()}
+                    p2["date_debut"] = d_start.strftime("%Y-%m-%d")
+                    p2["date_fin"]   = d_end.strftime("%Y-%m-%d")
+                    r = requests.get(url_base, params=p2, headers=hdrs, timeout=20, verify=False)
+                else:
+                    r = requests.post(url_base, data=payload, headers=hdrs, timeout=20, verify=False)
+
+                if r.status_code == 200 and "<table" in r.text.lower():
+                    df_i = _parse_historique_html(r.text)
+                    if not df_i.empty:
+                        frames.append(df_i)
+                        break  # POST inutile si GET a marché
+                else:
+                    errors.append(f"{method} {d_start.date()}→{d_end.date()}: HTTP {r.status_code}")
+            except Exception as e:
+                errors.append(f"{method} exception : {e}")
+                continue
+
+    # ── Stocker les erreurs en session pour debug ───────────────
+    if errors and not frames:
+        st.session_state["_hist_errors"] = errors
 
     if not frames:
         return pd.DataFrame()
 
-    # Concat + dédup + tri
     df_all = (pd.concat(frames, ignore_index=True)
                 .drop_duplicates(subset=["date"])
-                .dropna()
+                .dropna(subset=["date","close"])
                 .sort_values("date")
                 .tail(nb)
                 .reset_index(drop=True))
@@ -581,61 +607,59 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
 
 def calc_indicateurs(df: pd.DataFrame) -> dict:
     """
-    Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j depuis l'historique.
-    Nécessite au minimum 20 bougies.
+    Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j.
+    Version avec messages d'erreur explicites.
     """
-    if df.empty or len(df) < 20:
+    if df.empty:
+        st.session_state["_indic_error"] = "DataFrame historique vide"
         return {}
-    
+    if len(df) < 20:
+        st.session_state["_indic_error"] = f"Trop peu de points : {len(df)} (min 20)"
+        return {}
+
     try:
-        close = df["close"]
+        close = df["close"].astype(float)
 
-        # EMA 20
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-
-        # RSI 14
+        ema20    = close.ewm(span=20, adjust=False).mean().iloc[-1]
         delta    = close.diff()
-        gain     = delta.clip(lower=0)
-        loss     = -delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs       = avg_gain / avg_loss
+        gain     = delta.clip(lower=0).rolling(14).mean()
+        loss     = (-delta.clip(upper=0)).rolling(14).mean()
+        rs       = gain / loss.replace(0, np.nan)
         rsi_val  = (100 - (100 / (1 + rs))).iloc[-1]
+        bb_mid   = close.rolling(20).mean().iloc[-1]
+        bb_std   = close.rolling(20).std().iloc[-1]
+        bb_sup   = bb_mid + 2 * bb_std
+        bb_inf   = bb_mid - 2 * bb_std
 
-        # Bollinger Bands (20, 2)
-        bb_mid = close.rolling(20).mean().iloc[-1]
-        bb_std = close.rolling(20).std().iloc[-1]
-        bb_sup = bb_mid + 2 * bb_std
-        bb_inf = bb_mid - 2 * bb_std
+        nb_pts   = len(close)
+        lookback = min(63, nb_pts - 1)
+        var_3m   = (close.iloc[-1] / close.iloc[-lookback - 1] - 1) * 100 if lookback > 0 else 0.0
 
-        # Variation 3 mois (~63 séances de trading)
-        nb = len(close)
-        lookback_3m = min(63, nb - 1)
-        var_3m = (close.iloc[-1] / close.iloc[-lookback_3m - 1] - 1) * 100 if lookback_3m > 0 else 0.0
-
-        # Volume moyen 20j
         vol_moy_20j = 0.0
         if "volume" in df.columns:
             vols = pd.to_numeric(df["volume"], errors="coerce").dropna()
             if len(vols) >= 5:
                 vol_moy_20j = float(vols.tail(20).mean())
 
-        # Vérifier que toutes les valeurs sont valides (pas NaN ou inf)
-        if not all(np.isfinite(v) for v in [rsi_val, ema20, bb_sup, bb_inf, bb_mid, var_3m, vol_moy_20j]):
+        check = {"rsi": rsi_val, "ema20": ema20, "bb_sup": bb_sup,
+                 "bb_inf": bb_inf, "bb_mid": bb_mid, "var_3m": var_3m}
+        bad = {k: v for k, v in check.items() if not np.isfinite(v)}
+        if bad:
+            st.session_state["_indic_error"] = f"Valeurs NaN/inf : {bad}"
             return {}
 
         return {
-            "rsi":        round(float(rsi_val), 1),
-            "ema20":      round(float(ema20), 0),
-            "bb_sup":     round(float(bb_sup), 0),
-            "bb_inf":     round(float(bb_inf), 0),
-            "bb_mid":     round(float(bb_mid), 0),
-            "var_3m":     round(float(var_3m), 2),
+            "rsi":         round(float(rsi_val), 1),
+            "ema20":       round(float(ema20), 0),
+            "bb_sup":      round(float(bb_sup), 0),
+            "bb_inf":      round(float(bb_inf), 0),
+            "bb_mid":      round(float(bb_mid), 0),
+            "var_3m":      round(float(var_3m), 2),
             "vol_moy_20j": round(float(vol_moy_20j), 0),
-            "nb_pts":     nb,
+            "nb_pts":      nb_pts,
         }
     except Exception as e:
-        # En cas d'erreur, retourner un dict vide
+        st.session_state["_indic_error"] = f"Exception : {type(e).__name__}: {e}"
         return {}
 
 
@@ -818,6 +842,18 @@ with st.sidebar:
             st.success(f"✅ {len(rows)} titres importés"); st.rerun()
         except Exception as e:
             st.error(str(e))
+
+st.markdown("---")
+    st.markdown("**🐛 Debug**")
+    st.session_state["_debug_hist"] = st.checkbox("Activer logs historique", value=False)
+    
+    # Afficher les erreurs capturées
+    if "_hist_errors" in st.session_state and st.session_state["_hist_errors"]:
+        with st.expander("❌ Erreurs fetch historique"):
+            for e in st.session_state["_hist_errors"]:
+                st.code(e)
+    if "_indic_error" in st.session_state and st.session_state["_indic_error"]:
+        st.error(f"Calc indicateurs : {st.session_state['_indic_error']}")
 
 # ══════════════════════════════════════════════════════════════════
 # EN-TÊTE
