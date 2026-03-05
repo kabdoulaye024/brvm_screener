@@ -727,7 +727,7 @@ def _fetch_brvm_org_hist(tk: str, debug: bool = False) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
+def fetch_historique(ticker: str, nb: int = 250) -> pd.DataFrame:
     """
     Historique journalier en cascade via Cloudflare Worker :
       1. richbourse.com
@@ -739,27 +739,24 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
     debug = st.session_state.get("_debug_hist", False)
 
     if debug:
-        st.session_state["_debug_msgs"] = [f"=== fetch_historique({tk}) — proxy: {'ON' if _CF_WORKER else 'OFF'} ==="]
+        st.session_state["_debug_msgs"] = [
+            f"=== fetch_historique({tk}) — proxy: {'ON' if _CF_WORKER else 'OFF'} ==="]
 
-    # Source 1
-    df = _fetch_richbourse_hist(tk, debug)
+    df  = _fetch_richbourse_hist(tk, debug)
     if len(df) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df.tail(nb).reset_index(drop=True)
 
-    # Source 2
     df2 = _fetch_sikafinance_hist(tk, debug)
     if len(df2) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df2.tail(nb).reset_index(drop=True)
 
-    # Source 3
     df3 = _fetch_brvm_org_hist(tk, debug)
     if len(df3) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df3.tail(nb).reset_index(drop=True)
 
-    # Fusion des fragments
     fragments = [d for d in [df, df2, df3] if not d.empty]
     if fragments:
         merged = (pd.concat(fragments, ignore_index=True)
@@ -771,7 +768,6 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
             st.session_state.pop("_hist_errors", None)
             return merged.tail(nb).reset_index(drop=True)
 
-    # Échec total
     msg = (f"Aucune source ≥20 pts pour {tk} "
            f"(rb:{len(df)} sk:{len(df2)} bv:{len(df3)}) "
            f"— proxy {'actif' if _CF_WORKER else 'INACTIF (secret CF_WORKER_URL manquant?)'}")
@@ -779,60 +775,179 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _rsi_adaptatif(close: pd.Series, volume: pd.Series = None) -> tuple:
+    """
+    RSI adaptatif pour marchés peu liquides (BRVM).
+
+    Période adaptée au taux de liquidité sur les 60 dernières séances :
+      Liquidité ≥ 80%  → RSI(14) : titre actif, signal réactif
+      Liquidité 50–80% → RSI(21) : liquidité moyenne, signal lissé
+      Liquidité < 50%  → RSI(28) : titre peu actif, signal stable
+
+    Lissage Wilder : EWM com = période − 1 (identique TradingView/richbourse).
+    Retourne (rsi_value, periode, ratio_liquidite_pct)
+    """
+    if volume is not None:
+        vol             = pd.to_numeric(volume, errors="coerce").fillna(0)
+        n_actives       = (vol.tail(60) > 0).sum()
+        ratio_liquidite = n_actives / min(60, len(vol))
+    else:
+        ratio_liquidite = 1.0
+
+    if ratio_liquidite >= 0.80:
+        periode = 14
+    elif ratio_liquidite >= 0.50:
+        periode = 21
+    else:
+        periode = 28
+
+    com      = periode - 1
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = (-delta.clip(upper=0))
+    avg_gain = gain.ewm(com=com, adjust=False, min_periods=periode).mean()
+    avg_loss = loss.ewm(com=com, adjust=False, min_periods=periode).mean()
+    rs       = avg_gain / avg_loss.replace(0, np.nan)
+    rsi_s    = 100 - (100 / (1 + rs))
+
+    return float(rsi_s.iloc[-1]), periode, round(ratio_liquidite * 100, 0)
+
+
+def _var_periode(close: pd.Series, nb_seances: int) -> float:
+    """
+    Variation en % sur nb_seances séances de trading.
+    Si pas assez de données, retourne la variation maximale disponible.
+    """
+    n   = len(close)
+    lag = min(nb_seances, n - 1)
+    if lag <= 0:
+        return 0.0
+    return round((close.iloc[-1] / close.iloc[-lag - 1] - 1) * 100, 2)
+
+
 def calc_indicateurs(df: pd.DataFrame) -> dict:
-    """Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j."""
+    """
+    Calcule tous les indicateurs techniques depuis l'historique journalier.
+
+    ── Indicateurs ──────────────────────────────────────────────────
+    RSI adaptatif  — période 14/21/28 selon liquidité (Wilder EWM)
+    EMA(20)        — moyenne mobile exponentielle 20 périodes
+    BB(20, 2)      — Bollinger, std échantillon ddof=1
+    Var 1 sem      — ~5 séances  : signal très court terme (bruit filtré)
+    Var 1 mois     — ~21 séances : signal momentum principal BRVM ★
+    Var 3 mois     — ~63 séances : signal tendance longue
+    Vol moy 20j    — volume moyen séances actives
+
+    ── Var multi-timeframe : pourquoi 3 horizons ? ──────────────────
+    Sur la BRVM, la var 3 mois capture des mouvements déjà intégrés.
+    La var 1 semaine est trop bruitée (peu de transactions).
+    La var 1 mois est le meilleur signal momentum sur ce marché.
+
+    → Le score Momentum utilise var_1m (60%) + var_3m (40%)
+      au lieu de var_3m seule.
+
+    ── Qualité des données ───────────────────────────────────────────
+    < 60 pts  → avertissement, indicateurs approximatifs
+    ≥ 200 pts → convergence optimale (warmup Wilder complet)
+    """
     if df.empty:
         st.session_state["_indic_error"] = "DataFrame vide"
         return {}
     if len(df) < 20:
         st.session_state["_indic_error"] = f"Trop peu de points : {len(df)} (min 20)"
         return {}
+
     try:
-        close = df["close"].astype(float).reset_index(drop=True)
+        close  = df["close"].astype(float).reset_index(drop=True)
+        nb_pts = len(close)
 
-        ema20  = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        delta  = close.diff()
-        gain   = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-        loss   = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
-        rs     = gain / loss.replace(0, np.nan)
-        rsi_val = (100 - (100 / (1 + rs))).iloc[-1]
+        # ── EMA 20 ───────────────────────────────────────────────
+        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
 
+        # ── RSI adaptatif (Wilder) ────────────────────────────────
+        vol_series                = df["volume"] if "volume" in df.columns else None
+        rsi_val, rsi_per, liq_pct = _rsi_adaptatif(close, vol_series)
+
+        # ── Bollinger Bands (20, 2) ───────────────────────────────
         bb_mid = close.rolling(20).mean().iloc[-1]
-        bb_std = close.rolling(20).std().iloc[-1]
+        bb_std = close.rolling(20).std(ddof=1).iloc[-1]
         bb_sup = bb_mid + 2 * bb_std
         bb_inf = bb_mid - 2 * bb_std
 
-        nb_pts  = len(close)
-        lookbk  = min(63, nb_pts - 1)
-        var_3m  = (close.iloc[-1] / close.iloc[-lookbk - 1] - 1) * 100 if lookbk > 0 else 0.0
+        # ── Variations multi-timeframe ────────────────────────────
+        #   ~5  séances → 1 semaine  (court terme, signal directionnel)
+        #   ~21 séances → 1 mois     (momentum principal BRVM) ★
+        #   ~63 séances → 3 mois     (tendance longue)
+        var_1s = _var_periode(close, 5)
+        var_1m = _var_periode(close, 21)
+        var_3m = _var_periode(close, 63)
 
+        # ── Volume moyen 20j (séances actives uniquement) ─────────
         vol_moy = 0.0
-        if "volume" in df.columns:
-            vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
-            if (vols > 0).sum() >= 5:
-                vol_moy = float(vols[vols > 0].tail(20).mean())
+        if vol_series is not None:
+            vols = pd.to_numeric(vol_series, errors="coerce").fillna(0)
+            pos  = vols[vols > 0]
+            if len(pos) >= 5:
+                vol_moy = float(pos.tail(20).mean())
 
+        # ── Validation ───────────────────────────────────────────
         vals = {"rsi": rsi_val, "ema20": ema20,
-                "bb_sup": bb_sup, "bb_inf": bb_inf, "var_3m": var_3m}
+                "bb_sup": bb_sup, "bb_inf": bb_inf,
+                "var_1m": var_1m, "var_3m": var_3m}
         bad  = {k: v for k, v in vals.items() if not np.isfinite(float(v))}
         if bad:
-            st.session_state["_indic_error"] = f"NaN/inf: {list(bad.keys())}"
+            st.session_state["_indic_error"] = f"NaN/inf sur : {list(bad.keys())}"
             return {}
 
-        st.session_state.pop("_indic_error", None)
+        if nb_pts < 60:
+            st.session_state["_indic_error"] = (
+                f"⚠️ {nb_pts} pts — indicateurs approximatifs (idéal : 200+)")
+        else:
+            st.session_state.pop("_indic_error", None)
+
         return {
-            "rsi":         round(float(rsi_val), 1),
-            "ema20":       round(float(ema20), 0),
-            "bb_sup":      round(float(bb_sup), 0),
-            "bb_inf":      round(float(bb_inf), 0),
-            "bb_mid":      round(float(bb_mid), 0),
-            "var_3m":      round(float(var_3m), 2),
-            "vol_moy_20j": round(float(vol_moy), 0),
-            "nb_pts":      nb_pts,
+            "rsi":          round(float(rsi_val), 1),
+            "rsi_periode":  rsi_per,
+            "liq_pct":      liq_pct,
+            "ema20":        round(float(ema20), 0),
+            "bb_sup":       round(float(bb_sup), 0),
+            "bb_inf":       round(float(bb_inf), 0),
+            "bb_mid":       round(float(bb_mid), 0),
+            "var_1s":       var_1s,    # variation 1 semaine
+            "var_1m":       var_1m,    # variation 1 mois  ★ signal principal
+            "var_3m":       var_3m,    # variation 3 mois
+            "vol_moy_20j":  round(float(vol_moy), 0),
+            "nb_pts":       nb_pts,
         }
+
     except Exception as e:
         st.session_state["_indic_error"] = f"{type(e).__name__}: {e}"
         return {}
+
+
+def get_marche(ticker: str) -> dict:
+    """Pipeline cours + indicateurs techniques via proxy CF."""
+    tk = ticker.upper().strip()
+    result = {}
+    try:
+        result.update(fetch_cours(tk))
+    except Exception:
+        pass
+    try:
+        df_hist = fetch_historique(tk)
+        if not df_hist.empty:
+            indics = calc_indicateurs(df_hist)
+            if indics:
+                result.update(indics)
+                rsi_per = indics.get("rsi_periode", 14)
+                liq     = indics.get("liq_pct", 100)
+                result["_source_tech"] = (
+                    f"proxy·cf · {indics.get('nb_pts', 0)} pts · "
+                    f"RSI({rsi_per}) · liq {liq:.0f}%"
+                )
+    except Exception:
+        pass
+    return result
 
 
 def get_marche(ticker: str) -> dict:
