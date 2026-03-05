@@ -30,6 +30,21 @@ except ImportError:
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import os
+
+# ── Cloudflare Worker proxy ──────────────────────────────────────
+_CF_WORKER = st.secrets.get("CF_WORKER_URL", os.environ.get("CF_WORKER_URL", ""))
+
+def _get(url: str, *, timeout: int = 20, **kwargs) -> requests.Response:
+    """
+    Toutes les requêtes GET passent par le Worker Cloudflare si configuré.
+    Fallback direct sinon (dev local).
+    """
+    if _CF_WORKER:
+        relay = f"{_CF_WORKER}/?url={requests.utils.quote(url, safe='')}"
+        return requests.get(relay, timeout=timeout)
+    return requests.get(url, headers=HEADERS, timeout=timeout, verify=False, **kwargs)
+
 # ══════════════════════════════════════════════════════════════════
 # CONFIG & STYLES
 # ══════════════════════════════════════════════════════════════════
@@ -390,6 +405,35 @@ def _parse_table(html, ticker):
         pass
     return None, None
 
+import os
+
+# ══════════════════════════════════════════════════════════════════
+# CLOUDFLARE WORKER PROXY
+# Toutes les requêtes GET de scraping passent par ce relay.
+# Fallback direct si pas de secret configuré (dev local).
+# ══════════════════════════════════════════════════════════════════
+_CF_WORKER = st.secrets.get("CF_WORKER_URL", os.environ.get("CF_WORKER_URL", ""))
+
+def _get(url: str, *, timeout: int = 20, params: dict = None, **kwargs) -> requests.Response:
+    """
+    Wrapper GET universel.
+    - Avec CF_WORKER_URL : requête via Cloudflare (IP non bloquable)
+    - Sans              : appel direct (dev local)
+    params GET sont encodés dans l'URL cible avant relais.
+    """
+    # Construire l'URL cible avec ses éventuels query params
+    if params:
+        from urllib.parse import urlencode
+        sep = "&" if "?" in url else "?"
+        url = url + sep + urlencode(params)
+
+    if _CF_WORKER:
+        relay = f"{_CF_WORKER}/?url={requests.utils.quote(url, safe='')}"
+        return requests.get(relay, timeout=timeout)
+
+    return requests.get(url, headers=HEADERS, timeout=timeout, verify=False)
+
+
 # ══════════════════════════════════════════════════════════════════
 # SCRAPING — COURS
 # ══════════════════════════════════════════════════════════════════
@@ -405,7 +449,7 @@ def fetch_cours(ticker: str) -> dict:
     for url in [f"{RICHBOURSE_BASE}/common/variation/index",
                 f"{RICHBOURSE_BASE}/common/variation/index/veille/tout"]:
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            resp = _get(url, timeout=15)
             if resp.status_code != 200 or len(resp.text) < 500:
                 continue
             for df in pd.read_html(StringIO(resp.text)):
@@ -434,7 +478,7 @@ def fetch_cours(ticker: str) -> dict:
     for url in ["https://www.brvm.org/fr/cours-actions/0",
                 "https://www.brvm.org/fr/cours-actions/0/symbole/asc/100/1"]:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            r = _get(url, timeout=15)
             if r.status_code == 200 and tk in r.text.upper():
                 px, var = _parse_table(r.text, tk)
                 if px:
@@ -446,7 +490,7 @@ def fetch_cours(ticker: str) -> dict:
     for url in ["https://www.sikafinance.com/marches/aaz",
                 f"https://www.sikafinance.com/valeur/BRVM/{tk}"]:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            r = _get(url, timeout=15)
             if r.status_code == 200 and tk in r.text.upper():
                 px, var = _parse_table(r.text, tk)
                 if px:
@@ -456,13 +500,14 @@ def fetch_cours(ticker: str) -> dict:
 
     return {}
 
+
 # ══════════════════════════════════════════════════════════════════
 # SCRAPING — HISTORIQUE → INDICATEURS TECHNIQUES
 # Sources : richbourse (1) → sikafinance (2) → brvm.org (3)
 # ══════════════════════════════════════════════════════════════════
 
 def _parse_historique_html(html: str, debug: bool = False) -> pd.DataFrame:
-    """Parse table historique HTML — format richbourse ou brvm.org."""
+    """Parse table historique HTML."""
     if not HAS_BS4:
         return pd.DataFrame()
     soup  = BeautifulSoup(html, "html.parser")
@@ -481,9 +526,9 @@ def _parse_historique_html(html: str, debug: bool = False) -> pd.DataFrame:
                     for th in rows[0].find_all(["th","td"])]
 
     if debug:
-        st.session_state.setdefault("_debug_msgs", []).append(f"parse_html headers: {header_cells}")
+        st.session_state.setdefault("_debug_msgs", []).append(
+            f"parse_html headers: {header_cells}")
 
-    # Détection robuste des indices
     def _find(keywords, default):
         for i, h in enumerate(header_cells):
             if any(k in h for k in keywords):
@@ -507,7 +552,7 @@ def _parse_historique_html(html: str, debug: bool = False) -> pd.DataFrame:
     if not data:
         if debug:
             st.session_state.setdefault("_debug_msgs", []).append(
-                f"parse_html: table {len(rows)} lignes mais 0 données extraites")
+                f"parse_html: table {len(rows)} lignes, 0 données extraites")
         return pd.DataFrame()
 
     def _clean(s):
@@ -529,20 +574,14 @@ def _parse_historique_html(html: str, debug: bool = False) -> pd.DataFrame:
 
 
 def _fetch_richbourse_hist(tk: str, debug: bool = False) -> pd.DataFrame:
-    """
-    Historique depuis richbourse.com.
-    Essaie l'URL par défaut + 3 plages de dates (GET ISO + POST FR).
-    """
+    """Historique depuis richbourse.com via proxy."""
     from datetime import timedelta
-    hdrs = {**HEADERS,
-            "Referer": f"{RICHBOURSE_BASE}/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-    url  = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
+    url    = f"{RICHBOURSE_BASE}/common/variation/historique/{tk}"
     frames = []
 
-    # Appel 1 — page par défaut
+    # Appel défaut
     try:
-        r = requests.get(url, headers=hdrs, timeout=15, verify=False)
+        r = _get(url, timeout=20)
         if r.status_code == 200 and "<table" in r.text.lower():
             df0 = _parse_historique_html(r.text, debug)
             if not df0.empty:
@@ -553,12 +592,13 @@ def _fetch_richbourse_hist(tk: str, debug: bool = False) -> pd.DataFrame:
         else:
             if debug:
                 st.session_state.setdefault("_debug_msgs", []).append(
-                    f"richbourse défaut: HTTP {r.status_code}, table={'<table' in r.text.lower()}")
+                    f"richbourse défaut: HTTP {r.status_code}")
     except Exception as e:
         if debug:
-            st.session_state.setdefault("_debug_msgs", []).append(f"richbourse défaut exception: {e}")
+            st.session_state.setdefault("_debug_msgs", []).append(
+                f"richbourse défaut exception: {e}")
 
-    # Appels 2-4 — plages glissantes
+    # Plages de dates glissantes
     today = datetime.now()
     ranges = [
         (today - timedelta(days=540), today - timedelta(days=360)),
@@ -566,12 +606,11 @@ def _fetch_richbourse_hist(tk: str, debug: bool = False) -> pd.DataFrame:
         (today - timedelta(days=180), today),
     ]
     for d_s, d_e in ranges:
-        # Essai GET ISO
         try:
-            params = {"action": tk, "periode": "Journalière",
-                      "date_debut": d_s.strftime("%Y-%m-%d"),
-                      "date_fin":   d_e.strftime("%Y-%m-%d")}
-            r = requests.get(url, params=params, headers=hdrs, timeout=15, verify=False)
+            p = {"action": tk, "periode": "Journalière",
+                 "date_debut": d_s.strftime("%Y-%m-%d"),
+                 "date_fin":   d_e.strftime("%Y-%m-%d")}
+            r = _get(url, params=p, timeout=20)
             if r.status_code == 200 and "<table" in r.text.lower():
                 df_i = _parse_historique_html(r.text, debug)
                 if not df_i.empty:
@@ -579,12 +618,12 @@ def _fetch_richbourse_hist(tk: str, debug: bool = False) -> pd.DataFrame:
                     continue
         except Exception:
             pass
-        # Essai POST format FR
+        # Fallback POST direct (pas de proxy pour POST)
         try:
             data_post = {"action": tk, "periode": "Journalière",
                          "date_debut": d_s.strftime("%d/%m/%Y"),
                          "date_fin":   d_e.strftime("%d/%m/%Y")}
-            r = requests.post(url, data=data_post, headers=hdrs, timeout=15, verify=False)
+            r = requests.post(url, data=data_post, headers=HEADERS, timeout=20, verify=False)
             if r.status_code == 200 and "<table" in r.text.lower():
                 df_i = _parse_historique_html(r.text, debug)
                 if not df_i.empty:
@@ -603,11 +642,7 @@ def _fetch_richbourse_hist(tk: str, debug: bool = False) -> pd.DataFrame:
 
 
 def _fetch_sikafinance_hist(tk: str, debug: bool = False) -> pd.DataFrame:
-    """
-    Historique depuis sikafinance.com — endpoint chart JSON.
-    URL : /charts/gethistory?symbol=TICKER&period=1y
-    Retourne date, close, volume.
-    """
+    """Historique depuis sikafinance.com via proxy."""
     urls_to_try = [
         f"https://www.sikafinance.com/charts/gethistory?symbol={tk}&period=1y",
         f"https://www.sikafinance.com/charts/gethistory?symbol={tk}&period=2y",
@@ -615,32 +650,28 @@ def _fetch_sikafinance_hist(tk: str, debug: bool = False) -> pd.DataFrame:
     ]
     for url in urls_to_try:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            r = _get(url, timeout=15)
             if r.status_code != 200:
                 continue
             # Essai JSON
             try:
                 j = r.json()
-                # Format attendu : liste de {date, close/value/prix, volume} ou {t,c,v}
                 rows = []
                 if isinstance(j, list):
                     items = j
                 elif isinstance(j, dict):
-                    # Chercher une clé qui contient la liste
-                    items = next((v for v in j.values() if isinstance(v, list) and len(v) > 5), [])
+                    items = next((v for v in j.values()
+                                  if isinstance(v, list) and len(v) > 5), [])
                 else:
                     items = []
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    # Date
                     d = (item.get("date") or item.get("t") or item.get("Date") or
                          item.get("datetime") or item.get("time"))
-                    # Close
                     c = (item.get("close") or item.get("c") or item.get("Close") or
                          item.get("prix") or item.get("value") or item.get("last"))
-                    # Volume
-                    v = item.get("volume") or item.get("v") or item.get("Volume") or 0
+                    v = item.get("volume") or item.get("v") or 0
                     if d and c:
                         rows.append({"date": d, "close": c, "volume": v})
                 if rows:
@@ -667,16 +698,12 @@ def _fetch_sikafinance_hist(tk: str, debug: bool = False) -> pd.DataFrame:
         except Exception as e:
             if debug:
                 st.session_state.setdefault("_debug_msgs", []).append(
-                    f"sikafinance exception ({url}): {e}")
+                    f"sikafinance exception: {e}")
     return pd.DataFrame()
 
 
 def _fetch_brvm_org_hist(tk: str, debug: bool = False) -> pd.DataFrame:
-    """
-    Historique depuis brvm.org — page de cotation du titre.
-    URL : /fr/cours/show/TICKER/0/BVRM
-    Tente aussi l'endpoint JSON d'évolution s'il existe.
-    """
+    """Historique depuis brvm.org via proxy."""
     urls_to_try = [
         f"https://www.brvm.org/fr/cours/show/{tk}/0/BVRM",
         f"https://www.brvm.org/fr/cours-actions/historique/{tk}",
@@ -684,66 +711,55 @@ def _fetch_brvm_org_hist(tk: str, debug: bool = False) -> pd.DataFrame:
     ]
     for url in urls_to_try:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+            r = _get(url, timeout=15)
             if r.status_code == 200 and "<table" in r.text.lower():
                 df_h = _parse_historique_html(r.text, debug)
                 if len(df_h) >= 20:
                     if debug:
                         st.session_state.setdefault("_debug_msgs", []).append(
-                            f"brvm.org HTML OK ({url}): {len(df_h)} pts")
+                            f"brvm.org OK: {len(df_h)} pts ({url})")
                     return df_h
-                elif len(df_h) > 0 and debug:
-                    st.session_state.setdefault("_debug_msgs", []).append(
-                        f"brvm.org HTML: seulement {len(df_h)} pts ({url})")
         except Exception as e:
             if debug:
                 st.session_state.setdefault("_debug_msgs", []).append(
-                    f"brvm.org exception ({url}): {e}")
+                    f"brvm.org exception: {e}")
     return pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
     """
-    Récupère l'historique journalier depuis 3 sources en cascade :
-      1. richbourse.com  (historique + plages de dates)
-      2. sikafinance.com (JSON chart API)
-      3. brvm.org        (page de cotation)
-    Retourne un DataFrame [date, close, volume] trié ASC, ≥ nb pts si possible.
-    Stocke les erreurs dans st.session_state["_hist_errors"] pour debug.
+    Historique journalier en cascade via Cloudflare Worker :
+      1. richbourse.com
+      2. sikafinance.com
+      3. brvm.org
+    Fusionne les fragments si nécessaire.
     """
     tk    = ticker.upper().strip()
     debug = st.session_state.get("_debug_hist", False)
 
-    # Réinitialiser les logs debug pour ce ticker
     if debug:
-        st.session_state["_debug_msgs"] = [f"=== fetch_historique({tk}) ==="]
+        st.session_state["_debug_msgs"] = [f"=== fetch_historique({tk}) — proxy: {'ON' if _CF_WORKER else 'OFF'} ==="]
 
-    # ── Source 1 : richbourse ──────────────────────────────────
+    # Source 1
     df = _fetch_richbourse_hist(tk, debug)
     if len(df) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df.tail(nb).reset_index(drop=True)
-    if debug:
-        st.session_state.setdefault("_debug_msgs", []).append(
-            f"richbourse insuffisant: {len(df)} pts → essai sikafinance")
 
-    # ── Source 2 : sikafinance ─────────────────────────────────
+    # Source 2
     df2 = _fetch_sikafinance_hist(tk, debug)
     if len(df2) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df2.tail(nb).reset_index(drop=True)
-    if debug:
-        st.session_state.setdefault("_debug_msgs", []).append(
-            f"sikafinance insuffisant: {len(df2)} pts → essai brvm.org")
 
-    # ── Source 3 : brvm.org ────────────────────────────────────
+    # Source 3
     df3 = _fetch_brvm_org_hist(tk, debug)
     if len(df3) >= 20:
         st.session_state.pop("_hist_errors", None)
         return df3.tail(nb).reset_index(drop=True)
 
-    # ── Fusion des fragments (si chaque source a < 20 pts) ─────
+    # Fusion des fragments
     fragments = [d for d in [df, df2, df3] if not d.empty]
     if fragments:
         merged = (pd.concat(fragments, ignore_index=True)
@@ -755,25 +771,18 @@ def fetch_historique(ticker: str, nb: int = 120) -> pd.DataFrame:
             st.session_state.pop("_hist_errors", None)
             return merged.tail(nb).reset_index(drop=True)
 
-    # ── Échec total ────────────────────────────────────────────
-    total = sum(len(d) for d in [df, df2, df3])
-    st.session_state["_hist_errors"] = (
-        f"Aucune source n'a fourni ≥20 pts pour {tk} "
-        f"(richbourse:{len(df)} sika:{len(df2)} brvm:{len(df3)} total:{total})"
-    )
-    if debug:
-        st.session_state.setdefault("_debug_msgs", []).append(
-            f"ÉCHEC TOTAL: {st.session_state['_hist_errors']}")
+    # Échec total
+    msg = (f"Aucune source ≥20 pts pour {tk} "
+           f"(rb:{len(df)} sk:{len(df2)} bv:{len(df3)}) "
+           f"— proxy {'actif' if _CF_WORKER else 'INACTIF (secret CF_WORKER_URL manquant?)'}")
+    st.session_state["_hist_errors"] = msg
     return pd.DataFrame()
 
 
 def calc_indicateurs(df: pd.DataFrame) -> dict:
-    """
-    Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j.
-    Retourne {} si impossible, avec message dans _indic_error.
-    """
+    """Calcule BB(20,2), EMA(20), RSI(14), var_3m, vol_moy_20j."""
     if df.empty:
-        st.session_state["_indic_error"] = "DataFrame historique vide"
+        st.session_state["_indic_error"] = "DataFrame vide"
         return {}
     if len(df) < 20:
         st.session_state["_indic_error"] = f"Trop peu de points : {len(df)} (min 20)"
@@ -781,18 +790,17 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
     try:
         close = df["close"].astype(float).reset_index(drop=True)
 
-        ema20   = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        delta   = close.diff()
-        gain    = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-        loss    = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
-        rs      = gain / loss.replace(0, np.nan)
-        rsi_s   = (100 - (100 / (1 + rs)))
-        rsi_val = rsi_s.iloc[-1]
+        ema20  = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        delta  = close.diff()
+        gain   = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+        loss   = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+        rs     = gain / loss.replace(0, np.nan)
+        rsi_val = (100 - (100 / (1 + rs))).iloc[-1]
 
-        bb_mid  = close.rolling(20).mean().iloc[-1]
-        bb_std  = close.rolling(20).std().iloc[-1]
-        bb_sup  = bb_mid + 2 * bb_std
-        bb_inf  = bb_mid - 2 * bb_std
+        bb_mid = close.rolling(20).mean().iloc[-1]
+        bb_std = close.rolling(20).std().iloc[-1]
+        bb_sup = bb_mid + 2 * bb_std
+        bb_inf = bb_mid - 2 * bb_std
 
         nb_pts  = len(close)
         lookbk  = min(63, nb_pts - 1)
@@ -804,11 +812,11 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
             if (vols > 0).sum() >= 5:
                 vol_moy = float(vols[vols > 0].tail(20).mean())
 
-        vals = {"rsi": rsi_val, "ema20": ema20, "bb_sup": bb_sup,
-                "bb_inf": bb_inf, "bb_mid": bb_mid, "var_3m": var_3m}
+        vals = {"rsi": rsi_val, "ema20": ema20,
+                "bb_sup": bb_sup, "bb_inf": bb_inf, "var_3m": var_3m}
         bad  = {k: v for k, v in vals.items() if not np.isfinite(float(v))}
         if bad:
-            st.session_state["_indic_error"] = f"NaN/inf sur : {list(bad.keys())}"
+            st.session_state["_indic_error"] = f"NaN/inf: {list(bad.keys())}"
             return {}
 
         st.session_state.pop("_indic_error", None)
@@ -828,11 +836,7 @@ def calc_indicateurs(df: pd.DataFrame) -> dict:
 
 
 def get_marche(ticker: str) -> dict:
-    """
-    Pipeline unifié :
-      1. fetch_cours()      → prix + variation (cascade 3 sources)
-      2. fetch_historique() → BB, EMA, RSI calculés localement (cascade 3 sources)
-    """
+    """Pipeline cours + indicateurs techniques via proxy CF."""
     tk = ticker.upper().strip()
     result = {}
     try:
@@ -845,12 +849,10 @@ def get_marche(ticker: str) -> dict:
             indics = calc_indicateurs(df_hist)
             if indics:
                 result.update(indics)
-                src = "richbourse/sika/brvm"
-                result["_source_tech"] = f"{src} · {indics.get('nb_pts', 0)} pts"
+                result["_source_tech"] = f"proxy·cf · {indics.get('nb_pts', 0)} pts"
     except Exception:
         pass
     return result
-
 # ══════════════════════════════════════════════════════════════════
 # CALCULS FONDAMENTAUX
 # ══════════════════════════════════════════════════════════════════
